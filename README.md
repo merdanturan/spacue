@@ -22,7 +22,7 @@ you:  npm ␣
 ## Why
 
 Most completion tooling is either heavyweight — daemons, background services,
-model hooks — or locked to a single editor. spacue is **a single 30 KB zsh
+model hooks — or locked to a single editor. spacue is **a single 40 KB zsh
 file** that loads in about 10 ms: no daemon, no background process, no
 dependency. It sits in your shell and makes the prompt you already use
 smarter.
