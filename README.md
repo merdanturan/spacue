@@ -1,6 +1,6 @@
 # spacue
 
-**kiro-style dropdown autocomplete for zsh — one file, zero dependencies.**
+**Inline dropdown autocomplete for zsh — one file, zero dependencies.**
 
 Type a command, press space, and a dropdown of likely candidates appears right
 under your prompt: `package.json` scripts for npm/pnpm/yarn/bun, git
@@ -19,10 +19,11 @@ you:  npm ␣
 
 ## Why
 
-Tools like [kiro cli](https://kiro.dev) ship this exact UX — but bundle it
-inside a full assistant runtime: daemons, downloads, model hooks, storage.
-spacue is the part you actually use: **a single 30 KB zsh file** that loads in
-about 10 ms, with no daemon, no background process and no dependency.
+Most completion tooling is either heavyweight — daemons, background services,
+model hooks — or locked to a single editor. spacue is **a single 30 KB zsh
+file** that loads in about 10 ms: no daemon, no background process, no
+dependency. It sits in your shell and makes the prompt you already use
+smarter.
 
 ## Install
 
@@ -169,4 +170,3 @@ python3 tests/smoke.py     # quick smoke test
 ## License
 
 [MIT](LICENSE)
-# spacue

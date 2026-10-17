@@ -1,4 +1,4 @@
-# spacue.zsh -- kiro-style dropdown autocomplete for zsh
+# spacue.zsh -- inline dropdown autocomplete for zsh
 #
 # Type a command, press space, and Spacue shows a dropdown of likely
 # candidates right below your prompt. Arrow keys navigate, Enter inserts,
@@ -23,7 +23,7 @@ SPACUE_VERSION="0.2.0"
 : ${SPACUE_MAX:=200}           # max candidates per provider
 
 zmodload zsh/complist 2>/dev/null
-zmodload -F zsh/zleparameter p:PENDING p:KEYMAP 2>/dev/null
+zmodload zsh/zleparameter 2>/dev/null
 zmodload -F zsh/parameter p:commands p:aliases p:builtins p:functions 2>/dev/null
 
 # ------------------------------------------------------------- utilities ---
@@ -615,11 +615,23 @@ _spacue_completer() {  # runs inside the completion system while pending
   else
     disp=("${items[@]}")
   fi
+  # Split for native suffix handling: dir-like candidates (trailing slash)
+  # go in with -S '' so zsh appends nothing on accept (like native dir
+  # completion), everything else behaves like a completed word (space
+  # appended).  Both calls share the -V group so the visible order is kept.
+  local -a ditems didisp iitems iidisp
+  local j
+  for j in {1..${#items}}; do
+    if [[ ${items[j]} == */ ]]; then ditems+=("${items[j]}") didisp+=("${disp[j]}")
+    else iitems+=("${items[j]}") iidisp+=("${disp[j]}"); fi
+  done
   if [[ ${items[1]} == ${_spacue_token-}* ]]; then
-    compadd -V spacue -d disp -a items
+    (( ${#ditems} )) && compadd -S '' -V spacue -d didisp -a ditems
+    (( ${#iitems} )) && compadd -V spacue -d iidisp -a iitems
   else
     # fuzzy fallback produced non-prefix matches: add them as-is
-    compadd -U -V spacue -d disp -a items
+    (( ${#ditems} )) && compadd -S '' -U -V spacue -d didisp -a ditems
+    (( ${#iitems} )) && compadd -U -V spacue -d iidisp -a iitems
   fi
 }
 _spacue_completer_style() {  # zstyle -e answer function
@@ -736,11 +748,30 @@ _spacue_replace_token() {  # ITEM -- replace current token with ITEM
 }
 
 _spacue_fire() {  # one completion attempt per invocation
+  local before=$BUFFER
   zle complete-word
   # Both queued fires have now run (list + menu); the completion system no
   # longer needs our candidates, so drop it before the next Tab press.
   (( _spacue_fires = ${_spacue_fires:-0} + 1 ))
-  (( _spacue_fires >= 2 )) && _spacue_pending=""
+  if (( _spacue_fires == 1 )) && [[ $BUFFER != $before ]]; then
+    # The first attempt only extended the line to a common prefix (typing
+    # triggers start from a partial word).  A menu needs a second attempt
+    # on the extended line -- same as pressing Tab twice -- so queue one.
+    zle -U "$_spacue_firekey"
+    return 0
+  fi
+  if (( _spacue_fires >= 2 )); then
+    _spacue_pending=""
+    # The menu was accepted with Enter: the line changed and nothing is
+    # queued behind the completion.  (Typing mid-menu ungets the typed key
+    # and Esc/C-g unget the dismiss key, so KEYS_QUEUED_COUNT > 0 there.)
+    # Once accepted the pending state is pointless -- keeping it would make
+    # the next typed char restart the previous filter and wipe the accepted
+    # text.  Dismissals are cleaned up by the re-dispatched key instead.
+    if [[ $BUFFER != $before && ${KEYS_QUEUED_COUNT:-0} -eq 0 ]]; then
+      _spacue_cleanup_state
+    fi
+  fi
   # a non-zero rc here makes zle beep after the menu closes; the menu
   # itself already provides all the feedback we need
   return 0
@@ -765,6 +796,13 @@ _spacue_open_here() {
   if (( toklen )); then _spacue_pre="${BUFFER[1,$(( ${#BUFFER} - toklen ))]}" else _spacue_pre="$BUFFER"; fi
   _spacue_typed=$_spacue_token
   if (( ${#_spacue_items_list} == 1 )); then
+    if [[ ${_spacue_items_list[1]} == ${_spacue_token}../ ]]; then
+      # The only candidate is the parent link of an empty directory: the
+      # user already typed the directory itself ("cd beta/"), so don't
+      # rewrite it to "cd beta/../".
+      _spacue_cleanup_state
+      return 0
+    fi
     _spacue_replace_token "${_spacue_items_list[1]}"
     _spacue_cleanup_state
     return 0
@@ -778,7 +816,18 @@ _spacue_reopen() {  # BASE
   BUFFER="$base" CURSOR=${#BUFFER}
   if ! _spacue_collect_from_buffer; then _spacue_cleanup_state; return 0; fi
   if (( ! ${#_spacue_items_list} )); then _spacue_cleanup_state; return 0; fi
-  _spacue_open_here
+  local toklen=${#_spacue_token}
+  if (( toklen )); then _spacue_pre="${BUFFER[1,$(( ${#BUFFER} - toklen ))]}" else _spacue_pre="$BUFFER"; fi
+  _spacue_typed=$_spacue_token
+  if (( ${#_spacue_items_list} == 1 )); then
+    # Progressive typing: show the single candidate live but keep the state
+    # so the next keystroke re-filters from what was typed (otherwise the
+    # auto-inserted text would clobber further typing).
+    [[ ${_spacue_items_list[1]} == ${_spacue_token}../ ]] && return 0
+    _spacue_replace_token "${_spacue_items_list[1]}"
+    return 0
+  fi
+  _spacue_show_menu
 }
 
 # ------------------------------------------------------------- triggers ---
