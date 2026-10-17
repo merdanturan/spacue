@@ -429,8 +429,12 @@ _spacue_prov_kill() {
   local cmd=$1
   local out
   out=$(_spacue_cached "ps:$cmd" 2 _spacue_ps_raw)
+  local -a lines=(${(f)out})
+  # kill targets are listed newest-first so the cap keeps the processes the
+  # user is most likely after (the ones they just started).
+  [[ $cmd == kill ]] && lines=(${(On)lines})
   local l pid comm
-  for l in ${(f)out}; do
+  for l in "${lines[@]}"; do
     [[ -z $l ]] && continue
     pid=${l%%$'\t'*}
     comm=${l#*$'\t'}
@@ -645,7 +649,7 @@ _spacue_completer_style() {  # zstyle -e answer function
 }
 
 # ---------------------------------------------------- menu open / state ---
-typeset -g _spacue_on _spacue_pre _spacue_typed _spacue_pending _spacue_fires
+typeset -g _spacue_on _spacue_pre _spacue_typed _spacue_pending _spacue_fires _spacue_menufires
 typeset -g _spacue_saved_menu _spacue_saved_verbose _spacue_saved_completer
 typeset -g _spacue_styles_saved
 typeset -g _spacue_shields_up _spacue_esc_taken _spacue_beep_saved
@@ -727,14 +731,47 @@ _spacue_shields_off() {
   fi
 }
 
+# A dismissed menu hands zsh's pre-menu copy of the line back.  For fuzzy
+# (-U) candidate lists that copy is missing the typed filter text: the
+# insert phase replaced the token with the candidates' (empty) common
+# prefix, which leaves exactly the pre-part of the line behind.  When that
+# signature is found, rebuild the line from the typed state -- otherwise
+# the visible line (a typing-trigger prefix insert, a progressive
+# single-match insert, the typed text itself) is kept as-is.
+_spacue_fix_dismissed_line() {
+  [[ -n $_spacue_on ]] || return 0
+  [[ $BUFFER == "$_spacue_pre" ]] || return 0
+  BUFFER="${_spacue_pre}${_spacue_typed}"
+  CURSOR=${#BUFFER}
+}
+
 _spacue_esc() {  # re-dispatched Esc from a dismissed menu
-  [[ -n $_spacue_on ]] && _spacue_cleanup_state
+  if [[ -n $_spacue_on ]]; then
+    _spacue_fix_dismissed_line
+    _spacue_cleanup_state
+  fi
   zle -Rc 2>/dev/null
   return 0
 }
 
 _spacue_cleanup_state() {
-  _spacue_on="" _spacue_pre="" _spacue_typed="" _spacue_pending="" _spacue_fires=""
+  # An accepted word-kind menu selection leaves zsh's quoting on the line
+  # (`npm run\ test`): the completion system quotes every space so the
+  # insertion stays one token, and the state can be gone by the time the
+  # line executes (the menu's own finalization runs this cleanup), which
+  # would be too late for the accept-line wrapper to undo it.  Repair the
+  # line once, here, while provenance is still readable.  Path candidates
+  # keep zsh's (correct) quoting, since there a space is part of the name.
+  if [[ $SPACUE_KIND == words && -n $_spacue_pre && $BUFFER == "$_spacue_pre"* ]]; then
+    local ins="${BUFFER#"$_spacue_pre"}"
+    # In zsh pattern context a literal backslash-space pair is written
+    # '\ ' (a backslash only escapes the space); '\\ ' never matches here.
+    if [[ $ins == *'\ '* ]]; then
+      ins="${ins//'\ '/ }"
+      BUFFER="$_spacue_pre$ins" CURSOR=${#BUFFER}
+    fi
+  fi
+  _spacue_on="" _spacue_pre="" _spacue_typed="" _spacue_pending="" _spacue_fires="" _spacue_menufires=""
   _spacue_beep_restore
   _spacue_shields_off
   _spacue_style_off
@@ -750,24 +787,34 @@ _spacue_replace_token() {  # ITEM -- replace current token with ITEM
 _spacue_fire() {  # one completion attempt per invocation
   local before=$BUFFER
   zle complete-word
-  # Both queued fires have now run (list + menu); the completion system no
-  # longer needs our candidates, so drop it before the next Tab press.
   (( _spacue_fires = ${_spacue_fires:-0} + 1 ))
-  if (( _spacue_fires == 1 )) && [[ $BUFFER != $before ]]; then
-    # The first attempt only extended the line to a common prefix (typing
-    # triggers start from a partial word).  A menu needs a second attempt
-    # on the extended line -- same as pressing Tab twice -- so queue one.
-    zle -U "$_spacue_firekey"
+  if (( _spacue_fires == 1 )); then
+    # The first attempt is zsh's "insert common prefix" phase.  When it
+    # changed the line it did not list anything, so two more attempts are
+    # needed -- list, then menu -- and the menu sits two fires from here.
+    # (A no-change first attempt already lists; the menu comes next.)
+    if [[ $BUFFER != $before ]]; then
+      _spacue_menufires=3
+      # Fuzzy lists (-U) have no common prefix with the token, so this
+      # insert phase rewrites or wipes it (`npm run i` -> `npm run `).
+      # The typed filter text is kept in _spacue_pre/_spacue_typed; typing
+      # rebuilds the line from it, and the dismiss wrappers restore it.
+      zle -U "$_spacue_firekey"
+      return 0
+    fi
+    _spacue_menufires=2
     return 0
   fi
-  if (( _spacue_fires >= 2 )); then
+  if (( _spacue_fires >= _spacue_menufires )); then
+    # The menu attempt has just finished (any earlier fires were prefix
+    # insert / listing).  The completion system acts on its own again, so
+    # our candidates are dropped before the next Tab press.  When the menu
+    # was accepted with Enter the line changed and nothing is queued
+    # behind the completion; that is the end of the Spacue state.  (Typing
+    # mid-menu ungets the typed key and Esc/C-g unget the dismiss key, so
+    # KEYS_QUEUED_COUNT > 0 there -- those paths keep the state for their
+    # re-dispatched keys to clean up.)
     _spacue_pending=""
-    # The menu was accepted with Enter: the line changed and nothing is
-    # queued behind the completion.  (Typing mid-menu ungets the typed key
-    # and Esc/C-g unget the dismiss key, so KEYS_QUEUED_COUNT > 0 there.)
-    # Once accepted the pending state is pointless -- keeping it would make
-    # the next typed char restart the previous filter and wipe the accepted
-    # text.  Dismissals are cleaned up by the re-dispatched key instead.
     if [[ $BUFFER != $before && ${KEYS_QUEUED_COUNT:-0} -eq 0 ]]; then
       _spacue_cleanup_state
     fi
@@ -786,6 +833,13 @@ _spacue_show_menu() {
   _spacue_shields_on
   _spacue_pending=1
   _spacue_fires=0
+  _spacue_menufires=0
+  # Record provenance for the accept moment: the menu's own finalization
+  # tears the transient state down before accept-line runs again, and a
+  # word-kind selection must still arrive unquoted there (its wrapper
+  # falls back to these survivor variables, cleared at the next prompt).
+  _spacue_alive_pre="$_spacue_pre"
+  _spacue_alive_kind="${SPACUE_KIND:-words}"
   zle -U "$_spacue_firekey$_spacue_firekey"
 }
 
@@ -833,6 +887,10 @@ _spacue_reopen() {  # BASE
 # ------------------------------------------------------------- triggers ---
 _spacue_try_trigger() {  # MODE
   local mode=$1
+  # Menus are built on the completion system.  If it is not loaded (bare
+  # zsh with SPACUE_COMPINIT=0), stay completely out of the way: no state,
+  # no queued completion attempts -- space just types a space.
+  (( $+functions[_main_complete] )) || return 0
   case $mode in
     (space)
       _spacue_collect_from_buffer || return 0
@@ -861,21 +919,24 @@ _spacue_try_trigger() {  # MODE
 
 # ------------------------------------------------------- widget wrappers ---
 _spacue_self_insert() {
+  if [[ -n $_spacue_on ]]; then
+    # Typing while a menu is live (the key that ends menu-select, plus any
+    # key typed ahead of it).  The line may still show completion preview
+    # text or a half-restored buffer, so rebuild it from the canonical
+    # typed state -- pre + typed + key -- before re-filtering.  Fast typing
+    # (type-ahead, paste) then lands every key exactly once instead of
+    # dropping keys into the preview or losing the filter base.
+    BUFFER="${_spacue_pre}${_spacue_typed}"
+    CURSOR=${#BUFFER}
+    zle _spacue_ins
+    (( SPACUE_ENABLED )) && _spacue_reopen "$BUFFER"
+    return 0
+  fi
   zle _spacue_ins
   (( SPACUE_ENABLED )) || return 0
   (( ${PENDING:-0} )) && return 0
-  (( CURSOR == ${#BUFFER} )) || { [[ -n $_spacue_on ]] && _spacue_cleanup_state; return 0 }
-  local key=$KEYS
-  if [[ -n $_spacue_on ]]; then
-    # a char ended our menu-select; rebuild filter text and reopen
-    if [[ $BUFFER == $_spacue_pre* && ${BUFFER[-1]} == $key ]]; then
-      _spacue_reopen "${_spacue_pre}${_spacue_typed}${key}"
-    else
-      _spacue_cleanup_state
-    fi
-    return 0
-  fi
-  case $key in
+  (( CURSOR == ${#BUFFER} )) || return 0
+  case $KEYS in
     (' ') _spacue_try_trigger space ;;
     ('/') _spacue_try_trigger slash ;;
     (*)   _spacue_try_trigger typing ;;
@@ -899,7 +960,32 @@ _spacue_backward_delete_char() {
 }
 
 _spacue_accept_line() {
-  [[ -n $_spacue_on ]] && _spacue_cleanup_state
+  # A word-kind menu selection arrives quoted so it stays one shell token
+  # (`npm run\ build`, `pnpm run\ dev`).  The space is a word separator by
+  # design here, so undo the quoting on the inserted part before the line
+  # runs; path candidates keep zsh's (correct) quoting, since there a
+  # space is part of the name.  Provenance normally lives in the transient
+  # state, but the menu's own finalization may have dropped it already
+  # while the line still carries the quoting -- in that case fall back to
+  # the survivor recorded when the menu opened (precmd clears it).
+  local kind=$SPACUE_KIND pre=$_spacue_pre
+  if [[ -z $_spacue_on && -n ${_spacue_alive_pre-} ]]; then
+    kind=$_spacue_alive_kind pre=$_spacue_alive_pre
+  fi
+  if [[ $kind == words && -n $pre && $BUFFER == "$pre"* ]]; then
+    local ins="${BUFFER#"$pre"}"
+    # In zsh pattern context a literal backslash-space pair is written
+    # '\ ' (a backslash only escapes the space); '\\ ' never matches here.
+    if [[ $ins == *'\ '* ]]; then
+      ins="${ins//'\ '/ }"
+      BUFFER="$pre$ins" CURSOR=${#BUFFER}
+    fi
+  elif [[ -n $_spacue_pre && $BUFFER == "$_spacue_pre"* ]]; then
+    : # path-kind line: keep zsh's quoting untouched
+  fi
+  if [[ -n $_spacue_on ]]; then
+    _spacue_cleanup_state
+  fi
   zle _spacue_accept
 }
 
@@ -907,6 +993,7 @@ _spacue_send_break() {
   if [[ -n $_spacue_on ]]; then
     # Cancel the pending Spacue state (menu already dismissed) without
     # aborting the line: the typed text stays put and the next key works.
+    _spacue_fix_dismissed_line
     _spacue_cleanup_state
     zle -Rc 2>/dev/null
     return 0
@@ -916,6 +1003,7 @@ _spacue_send_break() {
 
 _spacue_list_expand() {
   if [[ -n $_spacue_on ]]; then
+    _spacue_fix_dismissed_line
     _spacue_cleanup_state
     zle -Rc 2>/dev/null
     return 0
@@ -925,6 +1013,7 @@ _spacue_list_expand() {
 
 _spacue_vi_cmd_mode() {
   if [[ -n $_spacue_on ]]; then
+    _spacue_fix_dismissed_line
     _spacue_cleanup_state
     zle -Rc 2>/dev/null
   fi
@@ -947,6 +1036,7 @@ _spacue_vi_cmd_mode() {
 
 # ------------------------------------------------------------- bootstrap ---
 _spacue_precmd() {
+  _spacue_alive_pre="" _spacue_alive_kind=""
   _spacue_cleanup_state
 }
 

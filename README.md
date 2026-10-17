@@ -17,6 +17,8 @@ you:  npm ␣
       npm install   npm run   npm test   npm exec ...
 ```
 
+![spacue in action](docs/demo.gif)
+
 ## Why
 
 Most completion tooling is either heavyweight — daemons, background services,
