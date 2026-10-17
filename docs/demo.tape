@@ -45,8 +45,8 @@ Ctrl+U
 Ctrl+L
 Sleep 1000ms
 
-# --- 2: make targets with ## hints -- menu, arrows, insert, run ---
-Type "make "
+# --- 2: cd directories -- menu, arrows, insert, run; prompt cwd flips ---
+Type "cd "
 Sleep 2600ms
 Down
 Sleep 700ms
