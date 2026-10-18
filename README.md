@@ -5,7 +5,9 @@
 Type a command, press space, and a dropdown of likely candidates appears right
 under your prompt: `package.json` scripts for npm/pnpm/yarn/bun, git
 subcommands and branches, Makefile targets, ssh hosts, running PIDs,
-directories for `cd`, files for everything else. Arrow keys to navigate,
+directories for `cd`, files for everything else. Opening or filtering the menu
+keeps your input unchanged. Press Down to preview the first candidate, then
+use the arrow keys to navigate,
 Enter or Tab to insert, Enter again to run, Esc to dismiss. Frequently
 accepted suggestions rise to the top, with extra weight for the current folder.
 
@@ -24,7 +26,7 @@ you:  npm ␣
 ## Why
 
 Most completion tooling is either heavyweight - daemons, background services,
-model hooks - or locked to a single editor. spacue is **a single ~51 KB zsh
+model hooks - or locked to a single editor. spacue is **a single ~53 KB zsh
 file**: no daemon, no background process, no extra runtime to install.
 It sits in your shell and makes the prompt you already use smarter.
 The optional demo media in this
@@ -80,12 +82,16 @@ git clone https://github.com/merdanturan/spacue \
 
 | Key                | Action                                        |
 |--------------------|-----------------------------------------------|
-| `space`            | open the menu after a command                 |
-| `↑` `↓`            | move the selection                            |
-| `Enter` / `Tab`    | accept the selected item (does **not** run)   |
+| `space`            | show suggestions without changing your input  |
+| `↓`                | select the first item, then move down         |
+| `↑`                | select the last item, then move up            |
+| `Enter` / `Tab`    | accept the selected item, or the first if none is selected (does **not** run) |
 | `Enter` (again)    | run the line                                  |
 | `Esc` / `Ctrl+G`   | close the menu, keep what you typed           |
-| keep typing        | live-filter while the menu is open            |
+| keep typing        | filter suggestions, keeping your typed input  |
+
+Lists taller than the terminal show a suggestion count until you press
+Up or Down to browse them.
 
 What shows up per command:
 

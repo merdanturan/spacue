@@ -1,7 +1,7 @@
 """Spacue end-to-end UX suite (with compinit, like a real-world zsh).
 
-Covers: menu open + preview, Down/Enter accept semantics (no trailing
-space), run on second Enter, prefix filtering, progressive typing
+Covers: menu open without insertion, Down/Enter accept semantics (no trailing
+space), run on second Enter, prefix filtering, manual selection
 (including type-ahead), Esc/C-g dismissal, npm scripts with hints, git
 subcommands, plain-Tab fallback, style restoration, generic file
 fallback, stock completion after accept.
@@ -83,15 +83,18 @@ def ding():
     return "DING2" in screen()
 
 
-print("S1: 'cd ' opens menu with preview + full listing")
+print("S1: 'cd ' opens a full listing without inserting")
 clear()
 t.send("cd ")
 t.wait_idle(1.3)
 s = screen()
 check("listing has ../ alpha/ beta/ gamma/", all(x in s for x in ("../", "alpha/", "beta/", "gamma/")), str(last_lines(3)))
-check("preview shows first item (cd ../)", prompt_row() == "PS> cd ../", prompt_row())
+check("input stays as typed", prompt_row() == "PS> cd", prompt_row())
 
-print("S2: Down moves selection")
+print("S2: first Down selects the first item; next Down moves selection")
+t.send_keys("Down")
+t.wait_idle(0.6)
+check("first Down selects ../", prompt_row() == "PS> cd ../", prompt_row())
 t.send_keys("Down")
 t.wait_idle(0.6)
 check("preview moved to alpha/", prompt_row() == "PS> cd alpha/", prompt_row())
@@ -117,7 +120,7 @@ t.send("cd ")
 t.wait_idle(1.2)
 t.send("g")
 t.wait_idle(1.0)
-check("auto-completed to exactly 'cd gamma/'", prompt_row() == "PS> cd gamma/", prompt_row())
+check("filter stays typed", prompt_row() == "PS> cd g", prompt_row())
 
 print("S6: npm menu lists scripts + subcommands with hints")
 clear()
@@ -127,16 +130,16 @@ s = screen()
 check("scripts and subcommands listed", "run build" in s and "run test" in s and "publish" in s)
 check("hint text visible (tsc -b)", "tsc -b" in s, str([l for l in last_lines(20) if "tsc" in l][:1]))
 
-print("S7: typing 'b' in npm menu completes 'run build'")
+print("S7: typing 'b' filters to 'run build' without inserting")
 t.send("b")
 t.wait_idle(1.0)
-check("buffer is exactly 'npm run build'", prompt_row() == "PS> npm run build", prompt_row())
+check("buffer is exactly 'npm b'", prompt_row() == "PS> npm b", prompt_row())
 
 print("S8: Esc: live state keeps the line; open menu closes, keeps typed text")
 n0 = len(t.raw)
 t.send_keys("Esc")
 t.wait_idle(0.9)
-check("filtered line survives Esc", prompt_row() == "PS> npm run build", prompt_row())
+check("filtered line survives Esc", prompt_row() == "PS> npm b", prompt_row())
 check("no BEL from accept/Esc", t.raw[n0:].count(b"\x07") == 0, str(t.raw[n0:].count(b"\x07")))
 clear()
 t.send("cd ")
@@ -194,6 +197,8 @@ t.send("cd ")
 t.wait_idle(1.2)
 t.send_keys("Down")
 t.wait_idle(0.4)
+t.send_keys("Down")
+t.wait_idle(0.4)
 t.send_keys("Enter")
 t.wait_idle(0.9)
 check("accepted 'cd alpha/'", prompt_row() == "PS> cd alpha/", prompt_row())
@@ -223,7 +228,7 @@ t.send("cd ")
 t.wait_idle(1.2)
 t.send("b")
 t.wait_idle(0.9)
-check("'b' narrows to 'cd beta/'", prompt_row() == "PS> cd beta/", prompt_row())
+check("'b' filters without insertion", prompt_row() == "PS> cd b", prompt_row())
 t.send("x")
 t.wait_idle(0.9)
 check("'x' restarts from typed text ('cd bx')", prompt_row() == "PS> cd bx", prompt_row())
@@ -236,13 +241,13 @@ t.send("cd ")
 t.wait_idle(1.2)
 t.send("bet")                      # one burst: b, e, t
 t.wait_idle(1.0)
-check("burst lands on 'cd beta/'", prompt_row() == "PS> cd beta/", prompt_row())
+check("burst keeps typed 'cd bet'", prompt_row() == "PS> cd bet", prompt_row())
 clear()
 t.send("npm ")
 t.wait_idle(1.3)
 t.send("ild")                      # fuzzy burst: must not leak native npm completion
 t.wait_idle(1.2)
-check("burst fuzzy-completes 'npm run build'", prompt_row() == "PS> npm run build", prompt_row())
+check("burst fuzzy-filters without inserting", prompt_row() == "PS> npm ild", prompt_row())
 check("no native npm listing leaked in", not rows_with("access"))
 
 t.send_keys("C-u", "C-g")

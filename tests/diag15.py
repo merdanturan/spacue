@@ -134,12 +134,15 @@ t.send("clear\n")
 t.wait_idle(0.3)
 t.send("kill ")                        # fresh space: the pid menu opens
 t.wait_idle(1.4)
-check("menu shows fresh pid with sleep hint",
-      any(spid in l and "sleep" in l for l in screen().splitlines()),
+check("process menu shows suggestions or an oversized-list count",
+      any(spid in l and "sleep" in l for l in screen().splitlines()) or
+      "suggestions (press Down to browse)" in screen(),
       f"pid={spid}; matches={[l for l in screen().splitlines() if spid in l or 'sleep' in l]}")
 t.send(spid)                           # chunk typed into the open menu
 t.wait_idle(1.4)
-check("pid inserted by typing", prompt_row() == f"PS> kill {spid}", prompt_row())
+check("typed pid is preserved", prompt_row() == f"PS> kill {spid}", prompt_row())
+check("filtered pid has the sleep hint",
+      any(spid in l and "sleep" in l for l in screen().splitlines()))
 t.send_keys("Esc")
 t.wait_idle(0.8)
 clearline()
@@ -154,7 +157,7 @@ t.send("sudo ")                        # fresh space: the command menu opens
 t.wait_idle(1.4)
 t.send("autol")                        # chunk typed into the open menu
 t.wait_idle(1.4)
-check("commands filtered by prefix", prompt_row() == "PS> sudo autoload", prompt_row())
+check("commands filtered by prefix", prompt_row() == "PS> sudo autol", prompt_row())
 t.send_keys("Esc")
 t.wait_idle(0.8)
 
@@ -164,6 +167,9 @@ t.send("npm ")
 t.wait_idle(1.3)
 t.send("run il")                # ends in a two-match fuzzy menu: rebuild + meta-build
 t.wait_idle(1.4)
+check("typed fuzzy filter is preserved", prompt_row() == "PS> npm run il", prompt_row())
+t.send_keys("Down")
+t.wait_idle(0.5)
 row1 = prompt_row()
 check("fuzzy menu shows both scripts", "rebuild" in screen() and "meta-build" in screen())
 check("first preview is one of them", row1 in ("PS> npm run rebuild", "PS> npm run meta-build"), row1)

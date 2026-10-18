@@ -74,6 +74,8 @@ print -r -- STARTED$((40+2))
 
     def test_arrows_enter_accept_then_execute(self):
         self.send("acme ")
+        self.expect_row("PS> acme")
+        self.key("Down")
         self.expect_row("PS> acme alpha")
         self.key("Down")
         self.expect_row("PS> acme beta")
@@ -86,7 +88,7 @@ print -r -- STARTED$((40+2))
 
     def test_single_native_match_keeps_quoting_and_requires_acceptance(self):
         self.send("acme single ")
-        self.expect_row(r"PS> acme single space\ name\;\ literal")
+        self.expect_row("PS> acme single")
         self.key("Tab")
         self.assertFalse((self.base / "argv").exists())
         self.key("Enter")
@@ -95,49 +97,53 @@ print -r -- STARTED$((40+2))
     def test_native_flags_are_offered(self):
         self.send("acme flags ")
         self.send("--")
-        self.expect_row("PS> acme flags --alpha")
+        self.expect_row("PS> acme flags --")
         self.key("Tab")
         self.key("Enter")
         self.assertEqual(self.argv(), "2:flags,--alpha")
 
     def test_native_suffix_is_kept(self):
         self.send("acme paths ")
-        self.expect_row("PS> acme paths child/")
+        self.expect_row("PS> acme paths")
         self.key("Tab")
         self.key("Enter")
         self.assertEqual(self.argv(), "2:paths,child/")
 
     def test_zero_matches_fall_back_to_files(self):
         self.send("acme none ")
-        self.expect_row("PS> acme none fallback.txt")
+        self.expect_row("PS> acme none")
         self.key("Tab")
         self.key("Enter")
         self.assertEqual(self.argv(), "2:none,fallback.txt")
 
     def test_failed_native_completion_falls_back_cleanly(self):
         self.send("acme fail ")
-        self.expect_row("PS> acme fail fallback.txt")
+        self.expect_row("PS> acme fail")
         self.key("Esc")
         self.expect_row("PS> acme fail")
 
     def test_typing_and_backspace_use_native_context(self):
         self.send("acme ")
         self.send("be")
-        self.expect_row("PS> acme beta")
+        self.expect_row("PS> acme be")
         self.key("BS")
-        self.expect_row("PS> acme beta")
+        self.expect_row("PS> acme b")
         self.key("Esc")
-        self.expect_row("PS> acme beta")
+        self.expect_row("PS> acme b")
 
     def test_opt_out_keeps_existing_file_suggestions(self):
         self.send("SPACUE_NATIVE=0\n")
         self.send("acme ")
+        self.expect_row("PS> acme")
+        self.key("Tab")
         self.expect_row("PS> acme fallback.txt")
         self.assertFalse((self.base / "native-calls").exists())
 
     def test_registered_provider_keeps_precedence(self):
         self.send("_custom() { spacue_add own-a; spacue_add own-b; }; spacue_register acme _custom\n")
         self.send("acme ")
+        self.expect_row("PS> acme")
+        self.key("Tab")
         self.expect_row("PS> acme own-a")
         self.assertFalse((self.base / "native-calls").exists())
 
@@ -159,14 +165,15 @@ print -r -- STARTED$((40+2))
         (self.base / "_lazy_spec").write_text("#autoload\ncompadd -- lazy-a lazy-b\n")
         self.send('fpath=("$PWD" $fpath); autoload -Uz _lazy_spec; compdef _lazy_spec lazytool\n')
         self.send("lazytool ")
-        self.expect_row("PS> lazytool lazy-a")
+        self.expect_row("PS> lazytool")
         self.key("Tab")
         self.expect_row("PS> lazytool lazy-a")
 
     def test_vi_mode_native_menu_accepts_without_executing(self):
         self.send("bindkey -v\n")
         self.send("acme ")
-        self.expect_row("PS> acme alpha")
+        self.expect_row("PS> acme")
+        self.key("Down")
         self.key("Down")
         self.key("Tab")
         self.expect_row("PS> acme beta")

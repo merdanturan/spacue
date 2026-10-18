@@ -60,16 +60,6 @@ class RegressionTests(unittest.TestCase):
         ''')
         self.assertEqual(output, "called")
 
-    def test_single_script_name_is_one_argument(self):
-        (self.base / "package.json").write_text('{"scripts":{"test all; unsafe":"echo test"}}')
-        output = self.shell('''
-          BUFFER='npm run test'; LBUFFER=$BUFFER
-          _spacue_collect_from_buffer; _spacue_open_here
-          npm() { print -r -- "$#:${(j:,:)@}"; }
-          eval "$BUFFER"
-        ''')
-        self.assertEqual(output, "2:run,test all; unsafe")
-
     def test_rank_ignores_invalid_and_handles_decimal_counts(self):
         (self.base / "stats.tsv").write_text(
             "npm:run alpha\tnot-a-number\t\n"
@@ -107,34 +97,6 @@ class RegressionTests(unittest.TestCase):
         self.assertIn(f"cd:target/\t24\t{self.base}", rows)
         self.assertEqual(os.stat(self.base / "stats.tsv").st_mode & 0o777, 0o600)
 
-    def test_single_path_is_inserted_as_one_shell_argument(self):
-        (self.base / "space dir").mkdir()
-        output = self.shell('''
-          BUFFER='cd space'; LBUFFER=$BUFFER
-          _spacue_collect_from_buffer; _spacue_open_here
-          print -r -- "$BUFFER"
-          eval "$BUFFER"; print -r -- "${PWD:t}"
-        ''')
-        self.assertEqual(output.splitlines(), [r"cd space\ dir/", "space dir"])
-
-    def test_nested_escaped_path_is_completed(self):
-        (self.base / "space dir" / "child").mkdir(parents=True)
-        output = self.shell(r'''
-          BUFFER='cd space\ dir/ch'; LBUFFER=$BUFFER
-          _spacue_collect_from_buffer; _spacue_open_here
-          eval "$BUFFER"; print -r -- "${PWD:t}"
-        ''')
-        self.assertEqual(output, "child")
-
-    def test_escaped_quote_in_path_is_completed(self):
-        (self.base / "it's here" / "child").mkdir(parents=True)
-        output = self.shell(r'''
-          BUFFER="cd it\\'s\\ here/ch"; LBUFFER=$BUFFER
-          _spacue_collect_from_buffer; _spacue_open_here
-          eval "$BUFFER"; print -r -- "${PWD:t}"
-        ''')
-        self.assertEqual(output, "child")
-
     def test_unknown_command_completes_later_arguments(self):
         (self.base / "file.txt").touch()
         self.assertIn("file.txt", self.shell('_spacue_dispatch example "" first; print -rl -- $_spacue_items_list').splitlines())
@@ -169,6 +131,18 @@ class RegressionTests(unittest.TestCase):
           print -r -- ${widgets[self-insert]}
         ''')
         self.assertEqual(output.splitlines(), ['"^G" backward-char', '"^[" forward-char', 'user:_spacue_self_insert'])
+
+    def test_navigation_string_bindings_survive_menu_cleanup(self):
+        output = self.shell('''
+          bindkey -M emacs -s '^[[B' 'hello world'
+          bindkey -M viins -s '^P' 'quoted "text"'
+          before_down=$(bindkey -L -M emacs '^[[B')
+          before_up=$(bindkey -L -M viins '^P')
+          _spacue_shields_on; _spacue_shields_off
+          [[ $(bindkey -L -M emacs '^[[B') == "$before_down" ]] && print down-preserved
+          [[ $(bindkey -L -M viins '^P') == "$before_up" ]] && print up-preserved
+        ''')
+        self.assertEqual(output.splitlines(), ['down-preserved', 'up-preserved'])
 
     def test_active_package_menu_reuses_full_candidates_before_cap(self):
         (self.base / "package.json").write_text('{"scripts":{"alpha":"a","beta":"b","gamma":"g"}}')

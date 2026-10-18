@@ -921,6 +921,22 @@ _spacue_complete() {
   _main_complete _spacue_completer
   local rc=$?
   _spacue_completion_matches=${compstate[nmatches]:-0}
+  _spacue_completion_lines=${compstate[list_lines]:-0}
+  # Showing suggestions must never insert even an unambiguous prefix.
+  # Only explicit navigation or acceptance may change the typed token.
+  case $_spacue_phase in
+    (list)
+      compstate[insert]='' compstate[list]='list force'
+      # An automatic listing must not ask a LISTMAX confirmation question:
+      # that question would consume the user's next typed character.
+      compstate[list_max]=$(( _spacue_completion_matches + 1 ))
+      # Let native menu selection page oversized lists when requested,
+      # instead of scrolling the editable prompt off the screen.
+      (( _spacue_completion_lines + BUFFERLINES >= LINES )) && compstate[list]=''
+      ;;
+    (select) compstate[insert]="menu:$_spacue_select_start"; compstate[list]='list force' ;;
+    (accept) compstate[insert]='1'; compstate[list]='' ;;
+  esac
   return $rc
 }
 
@@ -969,12 +985,14 @@ _spacue_completer() {  # runs inside the completion system while pending
 # ---------------------------------------------------- menu open / state ---
 typeset -g _spacue_state=idle _spacue_phase="" _spacue_pre="" _spacue_typed=""
 typeset -g _spacue_styles_saved
-typeset -gi _spacue_completion_matches=0
+typeset -gi _spacue_completion_matches=0 _spacue_completion_lines=0
 typeset -g _spacue_native_active=""
 typeset -g _spacue_shields_up _spacue_esc_taken _spacue_beep_saved
 typeset -gA _spacue_prev_main_tab
+typeset -gA _spacue_prev_main_nav
 typeset -gA _spacue_prev_menu_keys
 typeset -g _spacue_firekey=$'\e[991~'
+typeset -g _spacue_select_start=1
 
 _spacue_style_on() {
   [[ -n $_spacue_styles_saved ]] && return 0
@@ -1037,6 +1055,14 @@ _spacue_shields_on() {
     binding=$(bindkey -M "$map" '^I')
     _spacue_prev_main_tab[$map]=${binding##* }
     bindkey -M "$map" '^I' spacue-accept
+    for key in '^[[B' '^[OB' '^N' '^[[A' '^[OA' '^P'; do
+      # -L preserves string macros and quoting as well as widget bindings.
+      _spacue_prev_main_nav[$map:$key]=$(bindkey -L -M "$map" "$key")
+      case $key in
+        ('^[[B'|'^[OB'|'^N') bindkey -M "$map" "$key" spacue-down ;;
+        (*) bindkey -M "$map" "$key" spacue-up ;;
+      esac
+    done
   done
   # Bare Esc is undefined-key in the stock emacs keymap; take it over only
   # then (viins binds it to vi-cmd-mode, which has its own wrapper).
@@ -1048,12 +1074,20 @@ _spacue_shields_on() {
 _spacue_shields_off() {
   [[ -n $_spacue_shields_up ]] || return 0
   _spacue_shields_up=""
-  local map
+  local map navkey
+  local -a restore
   for map in emacs viins; do
     [[ $(bindkey -M "$map" '^I') == *spacue-accept ]] &&
       bindkey -M "$map" '^I' "${_spacue_prev_main_tab[$map]}"
+    for navkey in '^[[B' '^[OB' '^N' '^[[A' '^[OA' '^P'; do
+      if [[ $(bindkey -M "$map" "$navkey") == *spacue-(down|up) ]]; then
+        restore=(${(z)_spacue_prev_main_nav[$map:$navkey]})
+        "${(@Q)restore}"
+      fi
+    done
   done
   _spacue_prev_main_tab=()
+  _spacue_prev_main_nav=()
   local key
   for key in '^[' '^G' '^I'; do
     bindkey -M menuselect "$key" "${_spacue_prev_menu_keys[$key]}" 2>/dev/null
@@ -1065,16 +1099,10 @@ _spacue_shields_off() {
   fi
 }
 
-# A dismissed menu hands zsh's pre-menu copy of the line back.  For fuzzy
-# (-U) candidate lists that copy is missing the typed filter text: the
-# insert phase replaced the token with the candidates' (empty) common
-# prefix, which leaves exactly the pre-part of the line behind.  When that
-# signature is found, rebuild the line from the typed state -- otherwise
-# the visible line (a typing-trigger prefix insert, a progressive
-# single-match insert, the typed text itself) is kept as-is.
+# Dismissal restores exactly what the user typed, including fuzzy filters.
 _spacue_fix_dismissed_line() {
+  _spacue_check_listed || return 0
   [[ $_spacue_state != idle ]] || return 0
-  [[ $BUFFER == "$_spacue_pre" ]] || return 0
   BUFFER="${_spacue_pre}${_spacue_typed}"
   CURSOR=${#BUFFER}
 }
@@ -1123,44 +1151,51 @@ _spacue_format_item() {  # raw candidate -> safe shell insertion in REPLY
   fi
 }
 
-_spacue_replace_token() {  # ITEM -- replace current token with ITEM
-  _spacue_format_item "$1"
-  local item=$REPLY
-  local keep=$(( ${#BUFFER} - ${#_spacue_token} ))
-  if (( keep > 0 )); then BUFFER="${BUFFER[1,$keep]}${item}" else BUFFER="${item}" fi
-  CURSOR=${#BUFFER}
-}
-
 _spacue_accept_selection() {
   [[ $_spacue_state != idle ]] || return 0
   _spacue_stats_note
   _spacue_cleanup_state
 }
 
+# Ordinary ZLE editing is available before a selection is made. If another
+# widget edited the line or moved the cursor, stop using the old filter base
+# and let the key run through its restored binding.
+_spacue_check_listed() {
+  if [[ $_spacue_state == listed ]] &&
+      { [[ $BUFFER != "$_spacue_pre$_spacue_typed" ]] || (( CURSOR != ${#BUFFER} )); }; then
+    _spacue_cleanup_state
+    zle -Rc
+    return 1
+  fi
+  return 0
+}
+
 _spacue_fire() {
   [[ $_spacue_state == menu ]] || return 0
-  local phase=$_spacue_phase before=$BUFFER
+  local phase=$_spacue_phase
   zle spacue-complete
-  case $phase in
-    (prefix)
-      if (( _spacue_completion_matches == 0 )); then
-        BUFFER="$_spacue_pre$_spacue_typed" CURSOR=${#BUFFER}
-        _spacue_cleanup_state
-        zle -Rc
-        return 0
-      elif (( _spacue_completion_matches == 1 )); then
-        _spacue_state=preview
-        return 0
-      fi
-      if [[ $BUFFER != $before ]]; then _spacue_phase=list
-      else _spacue_phase=select; fi
-      zle -U "$_spacue_firekey"
-      return 0 ;;
-    (list)
-      _spacue_phase=select
-      zle -U "$_spacue_firekey"
-      return 0 ;;
-  esac
+  if (( _spacue_completion_matches == 0 )); then
+    BUFFER="$_spacue_pre$_spacue_typed" CURSOR=${#BUFFER}
+    _spacue_cleanup_state
+    zle -Rc
+    return 0
+  fi
+  if [[ $phase == list ]]; then
+    _spacue_state=listed
+    if (( _spacue_completion_lines + BUFFERLINES >= LINES )); then
+      zle -M "$_spacue_completion_matches suggestions (press Down to browse)"
+    fi
+    return 0
+  elif [[ $phase == accept ]]; then
+    _spacue_accept_selection
+    zle -Rc
+    return 0
+  elif (( _spacue_completion_matches == 1 )); then
+    # A single match has no native selection loop; keep it as a preview
+    # until Enter/Tab accepts or Esc restores the typed text.
+    _spacue_state=preview
+    return 0
+  fi
   # The native menu returned. Queued typing/dismissal belongs to its widget;
   # no queued key means acceptance. Tab may be redispatched by complist.
   _spacue_state=preview
@@ -1179,11 +1214,25 @@ _spacue_fire() {
 }
 
 _spacue_show_menu() {
-  _spacue_state=menu _spacue_phase=prefix
+  _spacue_state=menu _spacue_phase=list
   _spacue_style_on
   _spacue_beep_off
   _spacue_shields_on
   zle -U "$_spacue_firekey"
+}
+
+_spacue_down() {
+  _spacue_check_listed || { zle -U -- "$KEYS"; return 0; }
+  _spacue_select_start=1
+  _spacue_state=menu _spacue_phase=select
+  zle spacue-fire
+}
+
+_spacue_up() {
+  _spacue_check_listed || { zle -U -- "$KEYS"; return 0; }
+  _spacue_select_start=-1
+  _spacue_state=menu _spacue_phase=select
+  zle spacue-fire
 }
 
 # open / reopen from current buffer state (assumes collect already ran)
@@ -1192,8 +1241,7 @@ _spacue_open_here() {
   local toklen=${#_spacue_token}
   if (( toklen )); then _spacue_pre="${BUFFER[1,$(( ${#BUFFER} - toklen ))]}" else _spacue_pre="$BUFFER"; fi
   _spacue_typed=$_spacue_token
-  if [[ -n $_spacue_native_active ]]; then _spacue_show_menu; return 0; fi
-  if (( ${#_spacue_items_list} == 1 )); then
+  if [[ -z $_spacue_native_active ]] && (( ${#_spacue_items_list} == 1 )); then
     if [[ ${_spacue_items_list[1]} == ${(Q)_spacue_token}../ ]]; then
       # The only candidate is the parent link of an empty directory: the
       # user already typed the directory itself ("cd beta/"), so don't
@@ -1201,10 +1249,6 @@ _spacue_open_here() {
       _spacue_cleanup_state
       return 0
     fi
-    _spacue_replace_token "${_spacue_items_list[1]}"
-    _spacue_state=preview
-    _spacue_shields_on
-    return 0
   fi
   _spacue_show_menu
 }
@@ -1215,19 +1259,7 @@ _spacue_reopen() {  # BASE
   BUFFER="$base" CURSOR=${#BUFFER}
   if ! _spacue_collect_from_buffer; then _spacue_cleanup_state; return 0; fi
   if [[ -z $_spacue_native_active ]] && (( ! ${#_spacue_items_list} )); then _spacue_cleanup_state; return 0; fi
-  local toklen=${#_spacue_token}
-  if (( toklen )); then _spacue_pre="${BUFFER[1,$(( ${#BUFFER} - toklen ))]}" else _spacue_pre="$BUFFER"; fi
-  _spacue_typed=$_spacue_token
-  if [[ -n $_spacue_native_active ]]; then _spacue_show_menu; return 0; fi
-  if (( ${#_spacue_items_list} == 1 )); then
-    # Progressive typing: show the single candidate live but keep the state
-    # so the next keystroke re-filters from what was typed (otherwise the
-    # auto-inserted text would clobber further typing).
-    [[ ${_spacue_items_list[1]} == ${(Q)_spacue_token}../ ]] && return 0
-    _spacue_replace_token "${_spacue_items_list[1]}"
-    return 0
-  fi
-  _spacue_show_menu
+  _spacue_open_here
 }
 
 # ------------------------------------------------------------- triggers ---
@@ -1264,6 +1296,7 @@ _spacue_try_trigger() {  # MODE
 
 # ------------------------------------------------------- widget wrappers ---
 _spacue_self_insert() {
+  _spacue_check_listed || { zle -U -- "$KEYS"; return 0; }
   if [[ $_spacue_state != idle ]]; then
     # Typing while a menu is live (the key that ends menu-select, plus any
     # key typed ahead of it).  The line may still show completion preview
@@ -1289,6 +1322,7 @@ _spacue_self_insert() {
 }
 
 _spacue_backward_delete_char() {
+  _spacue_check_listed || { zle -U -- "$KEYS"; return 0; }
   if [[ $_spacue_state != idle ]]; then
     local typed=$_spacue_typed base
     if [[ -n $typed ]]; then
@@ -1305,6 +1339,12 @@ _spacue_backward_delete_char() {
 }
 
 _spacue_accept_line() {
+  _spacue_check_listed || { zle -U -- "$KEYS"; return 0; }
+  if [[ $_spacue_state == listed ]]; then
+    _spacue_state=menu _spacue_phase=accept
+    zle spacue-fire
+    return 0
+  fi
   if [[ $_spacue_state != idle ]]; then
     _spacue_accept_selection
     return 0
@@ -1387,6 +1427,8 @@ _spacue_install() {
   zle -C spacue-complete complete-word _spacue_complete
   zle -N spacue-esc _spacue_esc
   zle -N spacue-accept _spacue_accept_line
+  zle -N spacue-down _spacue_down
+  zle -N spacue-up _spacue_up
   zle -N spacue-fire _spacue_fire
   bindkey -M emacs "$_spacue_firekey" spacue-fire 2>/dev/null
   bindkey -M viins "$_spacue_firekey" spacue-fire 2>/dev/null
@@ -1408,6 +1450,8 @@ _spacue_uninstall() {
   zle -D spacue-complete 2>/dev/null
   zle -D spacue-esc 2>/dev/null
   zle -D spacue-accept 2>/dev/null
+  zle -D spacue-down 2>/dev/null
+  zle -D spacue-up 2>/dev/null
   bindkey -M emacs -r "$_spacue_firekey" 2>/dev/null
   bindkey -M viins -r "$_spacue_firekey" 2>/dev/null
   zle -D spacue-fire 2>/dev/null
