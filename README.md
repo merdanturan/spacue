@@ -1,6 +1,6 @@
 # spacue
 
-**Inline dropdown autocomplete for zsh — one file, zero dependencies.**
+**Inline dropdown autocomplete for zsh - one file, zero dependencies.**
 
 Type a command, press space, and a dropdown of likely candidates appears right
 under your prompt: `package.json` scripts for npm/pnpm/yarn/bun, git
@@ -23,8 +23,8 @@ you:  npm ␣
 
 ## Why
 
-Most completion tooling is either heavyweight — daemons, background services,
-model hooks — or locked to a single editor. spacue is **a single ~51 KB zsh
+Most completion tooling is either heavyweight - daemons, background services,
+model hooks - or locked to a single editor. spacue is **a single ~51 KB zsh
 file**: no daemon, no background process, no extra runtime to install.
 It sits in your shell and makes the prompt you already use smarter.
 The optional demo media in this
@@ -42,7 +42,7 @@ The installer copies `spacue.zsh` to `~/.spacue/` and adds one source line to
 `${ZDOTDIR:-$HOME}/.zshrc`. Updates are validated before replacing the installed
 file, so a failed download leaves your current installation intact.
 From then on spacue loads automatically in **every** terminal
-window, including the first one after every reboot — no login item, no
+window, including the first one after every reboot - no login item, no
 background daemon, nothing to start manually.
 
 Open a new terminal window (or run `exec zsh`) and try `cd ␣`.
@@ -200,12 +200,12 @@ _my_docker() {
 ## FAQ
 
 **Does it need macOS Login Items or a startup daemon?**
-No — and it can't be one. A Login Item (or LaunchAgent) is for *processes* the
+No - and it can't be one. A Login Item (or LaunchAgent) is for *processes* the
 system starts at boot. spacue is not a process; it is code that runs inside
 every zsh session. The `source` line in `~/.zshrc` is the persistence
-mechanism: every shell you open — first thing after a reboot included — loads
+mechanism: every shell you open - first thing after a reboot included - loads
 it automatically. If spacue ever ran a daemon instead, it *would* show up as a
-background item — which is exactly the kind of hidden baggage this tool exists
+background item - which is exactly the kind of hidden baggage this tool exists
 to avoid.
 
 **Does it slow down my prompt?** Candidates are computed on demand and cached
@@ -225,7 +225,7 @@ Requires zsh with its standard `complist`, `stat`, `system`, and `files` modules
 (included with macOS and typical Linux/WSL zsh packages). Tested locally on
 zsh 5.9. The JSON reader
 for `package.json` prefers `node`, then `jq`, then `python3`, and finally falls
-back to pure awk — no hard dependency.
+back to pure awk - no hard dependency.
 
 ## Development
 
