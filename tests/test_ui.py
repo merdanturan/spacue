@@ -25,8 +25,9 @@ class MenuTests(unittest.TestCase):
                       env={"ZDOTDIR": str(self.base), "SPACUE_STATS_FILE": str(self.stats)})
         self.addCleanup(self.t.close)
         self.t.wait_idle(0.1)
-        self.t.send("PS1='PS> '; bindkey -e; source " + shlex.quote(str(PLUGIN)) + "\n")
-        self.t.wait_idle(0.15)
+        self.t.send("PS1='PS> '; bindkey -e; source " + shlex.quote(str(PLUGIN)) +
+                    "; print -r -- STARTED$((1+1))\n")
+        self.assertTrue(self.t.wait_for("STARTED2", 15), self.t.screen.text())
         # Local function records argv without launching a package manager.
         self.t.send("npm() { print -r -- \"$#:${(j:,:)@}\" > argv; }; clear\n")
         self.t.wait_idle(0.1)
