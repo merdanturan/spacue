@@ -1,0 +1,21 @@
+name: Tests
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zsh on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Check shell syntax
+        run: |
+          zsh -n spacue.zsh
+          zsh -n spacue.plugin.zsh
+          sh -n install.sh
+          sh -n uninstall.sh
+      - name: Run tests
+        run: python3 tests/run.py

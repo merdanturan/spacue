@@ -12,11 +12,11 @@
 #   3. appends one source line to ~/.zshrc (idempotent)
 # That source line makes spacue load in every new zsh session -- every
 # terminal window, and on every reboot -- with no login item or daemon.
-set -u
+set -eu
 
 REPO="https://raw.githubusercontent.com/merdanturan/spacue/main"
 DIR="$HOME/.spacue"
-ZSHRC="$HOME/.zshrc"
+ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 
 fetch() {
   if command -v curl >/dev/null 2>&1; then
@@ -49,24 +49,28 @@ fi
 
 # 2) fetch the plugin (from the clone we're in, when run as ./install.sh)
 mkdir -p "$DIR"
+TMP_PLUGIN=$(mktemp "$DIR/.spacue.XXXXXX")
+trap 'rm -f "$TMP_PLUGIN"' EXIT
+trap 'exit 1' HUP INT TERM
 if [ -f "$(dirname "$0")/spacue.zsh" ]; then
-  cp "$(dirname "$0")/spacue.zsh" "$DIR/spacue.zsh"
+  cp "$(dirname "$0")/spacue.zsh" "$TMP_PLUGIN"
 else
-  fetch "$REPO/spacue.zsh" > "$DIR/spacue.zsh" || {
+  fetch "$REPO/spacue.zsh" > "$TMP_PLUGIN" || {
     echo "spacue: download failed" >&2
-    rm -f "$DIR/spacue.zsh"
     exit 1
   }
 fi
-grep -q "SPACUE_VERSION" "$DIR/spacue.zsh" 2>/dev/null || {
+grep -q "SPACUE_VERSION" "$TMP_PLUGIN" 2>/dev/null && zsh -n "$TMP_PLUGIN" || {
   echo "spacue: downloaded file looks wrong, aborting" >&2
-  rm -f "$DIR/spacue.zsh"
   exit 1
 }
+chmod 644 "$TMP_PLUGIN"
+mv -f "$TMP_PLUGIN" "$DIR/spacue.zsh"
 
 # 3) wire into ~/.zshrc (idempotent)
+mkdir -p "$(dirname "$ZSHRC")"
 touch "$ZSHRC"
-if grep -q "spacue.zsh" "$ZSHRC" 2>/dev/null; then
+if grep -q '^# >>> spacue >>>$' "$ZSHRC" 2>/dev/null; then
   echo "already wired in $ZSHRC"
 else
   cat >> "$ZSHRC" <<'EOF'

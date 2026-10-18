@@ -257,8 +257,10 @@ class Term:
         pid, fd = pty.fork()
         if pid == 0:
             env2 = dict(os.environ)
+            # The runner can inherit TERM=dumb from CI/tooling. This driver
+            # emulates xterm; zsh disables menu selection for a dumb terminal.
+            env2["TERM"] = "xterm-256color"
             env2.update(env or {})
-            env2.setdefault("TERM", "xterm-256color")
             os.environ.clear()
             os.environ.update(env2)
             fcntl.ioctl(0, termios.TIOCSWINSZ,

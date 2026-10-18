@@ -2,7 +2,8 @@
 # spacue uninstaller -- https://github.com/merdanturan/spacue
 # Run:  curl -fsSL https://raw.githubusercontent.com/merdanturan/spacue/main/uninstall.sh | sh
 #       (or ./uninstall.sh from a clone)
-ZSHRC="$HOME/.zshrc"
+set -eu
+ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
 
 if [ -f "$ZSHRC" ]; then
   if sed -i.bak '/# >>> spacue >>>/,/# <<< spacue <<</d' "$ZSHRC" 2>/dev/null; then

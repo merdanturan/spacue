@@ -6,26 +6,29 @@ Type a command, press space, and a dropdown of likely candidates appears right
 under your prompt: `package.json` scripts for npm/pnpm/yarn/bun, git
 subcommands and branches, Makefile targets, ssh hosts, running PIDs,
 directories for `cd`, files for everything else. Arrow keys to navigate,
-Enter to insert, Enter again to run, Esc to dismiss.
+Enter or Tab to insert, Enter again to run, Esc to dismiss. Frequently
+accepted suggestions rise to the top, with extra weight for the current folder.
 
-```
+<!-- ```
 you:  npm ␣
       ────────────────────────────────────────────
       npm run ␣dev        vite --port 3000
       npm run ␣build      tsc -b
       npm run ␣test       vitest
       npm install   npm run   npm test   npm exec ...
-```
+``` -->
+## How
 
 ![spacue in action](docs/demo.gif)
 
 ## Why
 
 Most completion tooling is either heavyweight — daemons, background services,
-model hooks — or locked to a single editor. spacue is **a single 40 KB zsh
-file** that loads in about 10 ms: no daemon, no background process, no
-dependency. It sits in your shell and makes the prompt you already use
-smarter.
+model hooks — or locked to a single editor. spacue is **a single ~48 KB zsh
+file**: no daemon, no background process, no extra runtime to install.
+It sits in your shell and makes the prompt you already use smarter.
+The optional demo media in this
+repository is not installed by the one-line installer.
 
 ## Install
 
@@ -36,7 +39,9 @@ curl -fsSL https://raw.githubusercontent.com/merdanturan/spacue/main/install.sh 
 ```
 
 The installer copies `spacue.zsh` to `~/.spacue/` and adds one source line to
-`~/.zshrc`. From then on spacue loads automatically in **every** terminal
+`${ZDOTDIR:-$HOME}/.zshrc`. Updates are validated before replacing the installed
+file, so a failed download leaves your current installation intact.
+From then on spacue loads automatically in **every** terminal
 window, including the first one after every reboot — no login item, no
 background daemon, nothing to start manually.
 
@@ -58,8 +63,8 @@ everything cleanly.
 ### Manual
 
 ```sh
-git clone https://github.com/merdanturan/spacue
-echo 'source ~/spacue/spacue.zsh' >> ~/.zshrc
+git clone https://github.com/merdanturan/spacue "$HOME/.spacue"
+echo 'source "$HOME/.spacue/spacue.zsh"' >> "${ZDOTDIR:-$HOME}/.zshrc"
 ```
 
 ### Plugin managers
@@ -77,7 +82,7 @@ git clone https://github.com/merdanturan/spacue \
 |--------------------|-----------------------------------------------|
 | `space`            | open the menu after a command                 |
 | `↑` `↓`            | move the selection                            |
-| `Enter`            | insert the selected item (does **not** run)   |
+| `Enter` / `Tab`    | accept the selected item (does **not** run)   |
 | `Enter` (again)    | run the line                                  |
 | `Esc` / `Ctrl+G`   | close the menu, keep what you typed           |
 | keep typing        | live-filter while the menu is open            |
@@ -94,10 +99,15 @@ What shows up per command:
 | `cd` / `pushd`                           | directories (including `../`)                 |
 | `ls`, `cat`, `vim`, `code`, `grep`, ...  | files & directories                           |
 | `ls -`, `curl -`, `git commit -`, ...    | common flags                                  |
-| anything else                            | files & directories of the current folder (first argument) |
+| anything else                            | files & directories, including later arguments |
 | `sudo` / `env` / `time` / `command` ...  | the wrapped command's own candidates          |
 
 Fuzzy fallback: `npm run bi␣` still finds `build`.
+
+Built-in providers supply command-specific suggestions for the commands above.
+Other commands receive file suggestions; spacue does not bundle a full CLI
+specification catalog. Plain Tab outside a spacue menu still uses your installed
+zsh completions. Commands after `|`, `&&`, `||`, and `;` use their own provider.
 
 ## Configuration
 
@@ -113,6 +123,28 @@ Set these before spacue loads (or export them in `~/.zshrc`):
 | `SPACUE_COMPINIT`        | `1`     | auto-load compinit when your setup lacks it        |
 | `SPACUE_DISABLED`        | `()`    | providers to turn off, e.g. `SPACUE_DISABLED="ssh kill"` |
 | `SPACUE_MAX`             | `200`   | max candidates per menu                            |
+| `SPACUE_STATS`           | `1`     | rank by accepted suggestions; `0` disables reads and writes |
+| `SPACUE_STATS_FILE`      | `${XDG_CACHE_HOME:-$HOME/.cache}/spacue/stats.tsv` | local usage file |
+
+## Local ranking
+
+Selections accepted with Enter or Tab are counted immediately, in the directory
+where they were accepted. Merely previewing, typing, or dismissing a suggestion
+does not count. The score is **global frequency + 2 × current-directory
+frequency**; ties keep the provider's original order. Package scripts share
+their counts between `npm ␣` and `npm run ␣` (likewise for other package managers).
+
+The file uses TSV (`command:candidate`, count, directory) rather than JSON/TOML
+so zsh can read it without an extra parser. An empty directory field holds a
+global count. Records are capped at 8,000; writes use a lock and atomic rename
+to protect updates from multiple terminals. File permissions are private to
+your user. No command history, script body, or telemetry is collected; the file
+contains accepted candidate names and directory paths. Names with tabs or
+newlines are not recorded.
+
+Set `SPACUE_STATS=0` to opt out. Remove the stats file to reset ranking, or set
+`SPACUE_STATS_FILE` to a different path. Uninstalling the plugin preserves this
+usage file; remove it separately to delete your learned rankings.
 
 ## Custom providers
 
@@ -145,29 +177,40 @@ it automatically. If spacue ever ran a daemon instead, it *would* show up as a
 background item — which is exactly the kind of hidden baggage this tool exists
 to avoid.
 
-**Does it slow down my prompt?** Loading costs ~10 ms. Candidates are computed
-on demand and cached (`git` 3 s, `ssh` 10 s, `ps` 2 s TTLs).
+**Does it slow down my prompt?** Candidates are computed on demand and cached
+(`git` 3 s, `ssh` 10 s, `ps` 2 s TTLs). If your shell has not loaded the zsh
+completion system, spacue initializes it once; `SPACUE_COMPINIT=0` opts out.
 
-**Does it break Tab?** No. Plain `Tab` keeps zsh's standard completion; spacue
-only hijacks the space key and a few edit keys while its menu is open.
+**Does it break Tab?** Plain `Tab` keeps zsh's standard completion. While a
+spacue suggestion is active, Tab accepts it just like Enter. Previous key
+bindings are restored when the suggestion is accepted or dismissed.
 
 **Known conflicts:** `fzf-tab` replaces the same menu machinery, so don't load
 both.
 
 ## Compatibility
 
-zsh 5.1+ (any macOS since Catalina, most Linux distros, WSL). The JSON reader
+Requires zsh with its standard `complist`, `stat`, and `system` modules
+(included with macOS and typical Linux/WSL zsh packages). Tested locally on
+zsh 5.9. The JSON reader
 for `package.json` prefers `node`, then `jq`, then `python3`, and finally falls
 back to pure awk — no hard dependency.
 
 ## Development
 
-Tests drive a real pty running zsh and assert on the rendered screen:
+Tests drive a real pty running zsh and assert on the rendered screen, plus
+isolated cache, ranking, concurrency, quoting, and installer regressions.
+No Python packages are needed:
 
 ```sh
-python3 tests/diag12.py    # end-to-end UX suite (15 checks)
-python3 tests/smoke.py     # quick smoke test
+python3 tests/run.py        # run the maintained suites sequentially
+python3 tests/regression.py # fast non-PTY regressions
+python3 tests/test_ui.py    # acceptance and quoting regressions
 ```
+
+The older `diag*.py` files outside the runner are exploratory diagnostics,
+not additional release checks. The maintained PTY suites share fixtures and
+must not be run in parallel.
 
 ## License
 

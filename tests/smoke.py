@@ -6,6 +6,12 @@ PLUGIN = os.path.join(os.path.dirname(__file__), "..", "spacue.zsh")
 PLUGIN = os.path.abspath(PLUGIN)
 DEMO = "/tmp/spacue-demo"
 
+# deterministic menus: own EMPTY stats file; ranking counts nothing
+os.makedirs("/tmp/spacue-suite-stats", exist_ok=True)
+STATS = "/tmp/spacue-suite-stats/smoke.tsv"
+open(STATS, "w").close()
+os.environ["SPACUE_STATS_FILE"] = STATS
+
 shutil.rmtree(DEMO, ignore_errors=True)
 os.makedirs(f"{DEMO}/alpha")
 os.makedirs(f"{DEMO}/beta")

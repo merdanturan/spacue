@@ -12,6 +12,13 @@ from pterm import Term
 
 PLUGIN = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "spacue.zsh"))
 
+# deterministic menus: this suite gets its own EMPTY stats file so usage
+# ranking counts nothing and provider order is untouched
+os.makedirs("/tmp/spacue-suite-stats", exist_ok=True)
+STATS = "/tmp/spacue-suite-stats/diag12.tsv"
+open(STATS, "w").close()
+os.environ["SPACUE_STATS_FILE"] = STATS
+
 t = Term(["zsh", "-f", "-i"], cols=110, rows=34)
 t.wait_idle(0.5, 5)
 t.send("PS1='PS> '\n")
@@ -179,6 +186,10 @@ print("S13: after accept, stock completion works (no stale spacue items)")
 clear()
 t.send("zstyle ':completion:*' menu select\n")
 t.wait_idle(0.3)
+# earlier scenes accepted alpha/, so the usage rank has lifted it above ../;
+# this scene tests STOCK completion behaviour: pin provider order
+t.send("export SPACUE_STATS=0\n")
+t.wait_idle(0.3)
 t.send("cd ")
 t.wait_idle(1.2)
 t.send_keys("Down")
@@ -204,6 +215,8 @@ clearline()
 t.send("zstyle -d ':completion:*' menu\n")
 t.wait_idle(0.3)
 
+t.send("export SPACUE_STATS=1\n")   # re-enable usage rank for later scenes
+t.wait_idle(0.3)
 print("S14: typing mid-menu filters live; typed text is the base")
 clear()
 t.send("cd ")

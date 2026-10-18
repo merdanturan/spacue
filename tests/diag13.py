@@ -8,6 +8,12 @@ from pterm import Term
 
 PLUGIN = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "spacue.zsh"))
 
+# deterministic menus: own EMPTY stats file; ranking counts nothing
+os.makedirs("/tmp/spacue-suite-stats", exist_ok=True)
+STATS = "/tmp/spacue-suite-stats/diag13.tsv"
+open(STATS, "w").close()
+os.environ["SPACUE_STATS_FILE"] = STATS
+
 RESULTS = []
 
 

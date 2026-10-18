@@ -8,6 +8,13 @@ from pterm import Term
 PLUGIN = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "spacue.zsh"))
 BASE = "/tmp/spacue-demo"
 
+# deterministic menus: own EMPTY stats file; ranking counts nothing
+# (seeding happens per-scenario below)
+os.makedirs("/tmp/spacue-suite-stats", exist_ok=True)
+STATS = "/tmp/spacue-suite-stats/diag15.tsv"
+open(STATS, "w").close()
+os.environ["SPACUE_STATS_FILE"] = STATS
+
 RESULTS = []
 
 
@@ -128,7 +135,8 @@ t.wait_idle(0.3)
 t.send("kill ")                        # fresh space: the pid menu opens
 t.wait_idle(1.4)
 check("menu shows fresh pid with sleep hint",
-      any(spid in l and "sleep" in l for l in screen().splitlines()), f"pid={spid}")
+      any(spid in l and "sleep" in l for l in screen().splitlines()),
+      f"pid={spid}; matches={[l for l in screen().splitlines() if spid in l or 'sleep' in l]}")
 t.send(spid)                           # chunk typed into the open menu
 t.wait_idle(1.4)
 check("pid inserted by typing", prompt_row() == f"PS> kill {spid}", prompt_row())
