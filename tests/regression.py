@@ -292,7 +292,12 @@ class RegressionTests(unittest.TestCase):
           _spacue_dispatch cat ''
           print -r -- ${(j:,:)_spacue_items_list}
         ''')
-        self.assertEqual(output.splitlines(), ["1:1:a[1]", "a*literal", "a*literal,a[1],ordinary"])
+        lines = output.splitlines()
+        self.assertEqual(lines[:2], ["1:1:a[1]", "a*literal"])
+        self.assertEqual(len(lines), 3)
+        # zsh orders punctuation differently across locales; test membership
+        # and multiplicity without imposing C collation on the user's shell.
+        self.assertCountEqual(lines[2].split(","), ["a*literal", "a[1]", "ordinary"])
 
     def test_stats_parser_consumes_the_supplied_snapshot(self):
         (self.base / "stats.tsv").write_text("npm:test\t9\t\n")
