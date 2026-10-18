@@ -1,80 +1,95 @@
-# spacue demo — github.com/merdanturan/spacue
-# recorded in a clean "zsh -f" shell: nothing from the user's setup.
-# the plugin is sourced from a neutral fixture copy -- no local paths on screen.
+# Run from the repository root: vhs docs/demo.tape
+# A real zsh session using the current plugin and disposable demo fixtures.
+Require zsh
+Require node
+Require npm
 
 Output docs/demo.gif
 Output docs/demo.mp4
 
 Set Shell bash
+Set FontFamily "Menlo"
 Set FontSize 20
-Set Width 1040
-Set Height 620
-Set Padding 40
-Set Theme Dracula
-Set TypingSpeed 140ms
+Set Width 1120
+Set Height 520
+Set Padding 28
+Set Margin 16
+Set MarginFill "#080e0c"
+Set BorderRadius 12
+Set WindowBar Colorful
+Set Framerate 24
+Set CursorBlink false
+Set TypingSpeed 110ms
+Set Theme { "name": "spacue", "background": "#111916", "foreground": "#e2eae5", "black": "#17221c", "red": "#f08888", "green": "#8cdeb0", "yellow": "#e5c890", "blue": "#8db6da", "magenta": "#c6a4d9", "cyan": "#9cd8ce", "white": "#e2eae5", "brightBlack": "#82978c", "brightRed": "#f5a3a3", "brightGreen": "#a4ecc4", "brightYellow": "#f0dbaf", "brightBlue": "#b1d2ed", "brightMagenta": "#d9bfe7", "brightCyan": "#bcebe1", "brightWhite": "#f5faf7", "cursor": "#8cdeb0", "selection": "#2d493a" }
 
 Hide
-Type "exec zsh -f -i"
+Type@0 "exec zsh -f -i"
 Enter
-Sleep 900ms
-Type "PROMPT=' %F{magenta}spacue%f ❯ '; RPS1=' %F{cyan}%1~%f'"
-Enter
-Type "autoload -Uz compinit && compinit -u -C -d /tmp/spacue-demo-dump"
-Enter
-Type "cd /tmp/spacue-video"
-Enter
-Type "source ./spacue.zsh"
-Enter
-Sleep 900ms
-Show
-Ctrl+L
-Sleep 1200ms
-
-# --- 1: npm package.json scripts -- menu, arrows, insert, run ---
-Type "npm "
-Sleep 2600ms
-Down
-Sleep 700ms
-Down
-Sleep 1100ms
-Enter
-Sleep 1600ms
-Enter
-Sleep 3000ms
-Ctrl+U
-Ctrl+L
-Sleep 1000ms
-
-# --- 2: cd directories -- menu, arrows, insert, run; prompt cwd flips ---
-Type "cd "
-Sleep 2600ms
-Down
-Sleep 700ms
-Down
-Sleep 1100ms
-Enter
-Sleep 1600ms
-Enter
-Sleep 3000ms
-Ctrl+U
-Ctrl+L
-Sleep 1000ms
-
-# --- 3: git -- fuzzy subcommand filter, then fuzzy branch switch ---
-Type "git ch"
-Sleep 2600ms
-Enter
-Sleep 1600ms
-Type " f"
-Sleep 2600ms
-Enter
-Sleep 3000ms
-Ctrl+U
-Ctrl+L
-Sleep 1000ms
-
-# --- sign-off ---
-Type "echo 'github.com/merdanturan/spacue'"
 Sleep 500ms
+Type@0 "source ./docs/demo-setup.zsh; _spacue_demo_scene 1"
 Enter
-Sleep 3500ms
+Sleep 1500ms
+Show
+Sleep 800ms
+
+# No candidate is inserted when the dropdown opens.
+Type "npm "
+Sleep 2000ms
+Down
+Sleep 700ms
+Down
+Sleep 650ms
+Up
+Sleep 700ms
+Tab
+Sleep 1100ms
+Enter
+Sleep 1800ms
+
+Hide
+Type@0 "_spacue_demo_scene 2"
+Enter
+Sleep 300ms
+Show
+Sleep 650ms
+Type "npm run "
+Sleep 850ms
+Type "te"
+Sleep 1600ms
+Down
+Sleep 900ms
+Escape
+Sleep 1100ms
+Ctrl+U
+
+Hide
+Type@0 "_spacue_demo_scene 3"
+Enter
+Sleep 300ms
+Show
+Sleep 650ms
+Type "cd "
+Sleep 1000ms
+Type "sr"
+Sleep 1200ms
+Down
+Sleep 800ms
+Tab
+Sleep 800ms
+Enter
+Sleep 1500ms
+
+Hide
+Type@0 "_spacue_demo_scene done"
+Enter
+Sleep 300ms
+Show
+Sleep 2600ms
+
+# Return to the opening composition for a clean loop.
+Hide
+Type@0 "_spacue_demo_scene 1"
+Enter
+Sleep 300ms
+Show
+Sleep 250ms
