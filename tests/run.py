@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SUITES = ("regression.py", "test_install.py", "test_ui.py", "diag12.py",
+SUITES = ("regression.py", "test_install.py", "test_ui.py", "test_native.py", "diag12.py",
           "diag13.py", "diag14.py", "diag15.py", "diag16.py")
 
 failed = []

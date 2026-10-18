@@ -11,7 +11,7 @@
 [[ -o interactive ]] || return 0
 [[ -n $_SPACUE_LOADED ]] && return 0
 _SPACUE_LOADED=1
-SPACUE_VERSION="0.3.0"
+SPACUE_VERSION="0.4.0"
 
 # ---------------------------------------------------------------- config ---
 : ${SPACUE_ENABLED:=1}         # kill switch
@@ -23,12 +23,14 @@ SPACUE_VERSION="0.3.0"
 : ${SPACUE_DISABLED:=()}       # provider names to disable: npm git make ssh kill sudo paths
 : ${SPACUE_MAX:=200}           # max candidates per provider
 : ${SPACUE_STATS:=1}           # usage ranking: accepted candidates climb to the top (0 = off)
+: ${SPACUE_NATIVE:=0}          # opt in to installed zsh completions for other commands
 SPACUE_STATS_FILE="${SPACUE_STATS_FILE:-${XDG_CACHE_HOME:-$HOME/.cache}/spacue/stats.tsv}"
 
 zmodload zsh/complist 2>/dev/null
 zmodload zsh/zleparameter 2>/dev/null
 zmodload zsh/stat 2>/dev/null
 zmodload zsh/system 2>/dev/null
+zmodload -F zsh/files b:zf_mkdir b:zf_mv b:zf_rm 2>/dev/null
 zmodload -F zsh/parameter p:commands p:aliases p:builtins p:functions 2>/dev/null
 
 # ------------------------------------------------------------- utilities ---
@@ -63,12 +65,20 @@ _spacue_has() {  # command available? (cached 30s)
   else _spacue_hascache[$k]=0; _spacue_cache_time[$k]=$SECONDS; return 1; fi
 }
 
-_spacue_mtime() {  # sets REPLY to file mtime (best effort)
-  emulate -L zsh
-  local -a st
-  if zstat -A st +mtime -- "$1" 2>/dev/null; then REPLY=${st[1]}; return 0; fi
-  REPLY=$(stat -f %m -- "$1" 2>/dev/null || stat -c %Y -- "$1" 2>/dev/null)
-  [[ -n $REPLY ]]
+_spacue_file_stamp() {  # native metadata; inode detects same-second atomic writes
+  local -A st
+  REPLY=""
+  zstat -H st -- "$1" 2>/dev/null || return 1
+  REPLY="${st[device]}:${st[inode]}:${st[size]}:${st[mtime]}:${st[ctime]}"
+}
+
+_spacue_source_stamp() {  # only when generating a fresh package/Makefile snapshot
+  _spacue_file_stamp "$1" || return 1
+  local stamp=$REPLY checksum
+  if ! { checksum=$(command cksum < "$1"); } 2>/dev/null; then
+    REPLY=""; return 1  # no checksum utility: decode fresh, without a payload cache
+  fi
+  REPLY="$stamp:$checksum"
 }
 
 _spacue_add() {  # VALUE [DESC] [MATCH]
@@ -116,13 +126,31 @@ _spacue_dedup_sort() {  # dedup by value, keep order
 # under a native zsh file lock, before the command can change directory.
 # SPACUE_STATS=0 disables the feature entirely.
 typeset -g _spacue_stats_cmd=""
+typeset -g _spacue_stats_signature=""
 typeset -gA _spacue_statG _spacue_statD
 
-_spacue_stats_load() {  # small file: reread so other shells' updates are visible
-  [[ -r $SPACUE_STATS_FILE ]] || { _spacue_statG=() _spacue_statD=(); return 1 }
-  local raw="" l k n d
+_spacue_stats_load() {
+  if [[ ! -r $SPACUE_STATS_FILE ]]; then
+    _spacue_stats_signature="" _spacue_statG=() _spacue_statD=()
+    return 1
+  fi
+  local signature=""
+  if _spacue_file_stamp "$SPACUE_STATS_FILE"; then
+    signature="${(qqq)SPACUE_STATS_FILE}:${(qqq)PWD}:$REPLY"
+    [[ $_spacue_stats_signature == "$signature" ]] && return 0
+  fi
+  local raw
+  if ! { raw=$(<$SPACUE_STATS_FILE); } 2>/dev/null; then
+    _spacue_stats_signature="" _spacue_statG=() _spacue_statD=()
+    return 1
+  fi
+  _spacue_stats_parse "$raw"
+  _spacue_stats_signature=$signature
+}
+
+_spacue_stats_parse() {  # validated TSV -> global/current-directory counts
+  local raw=$1 l k n d
   _spacue_statG=() _spacue_statD=()
-  raw=$(<$SPACUE_STATS_FILE)
   for l in ${(f)raw}; do
     [[ $l == *$'\t'* ]] || continue
     k=${l%%$'\t'*} n=${l#*$'\t'} d=${n#*$'\t'} n=${n%%$'\t'*}
@@ -142,7 +170,7 @@ _spacue_stats_rank() {  # bubble the candidates the user actually accepts upward
   (( ${#_spacue_items_list} > 1 )) || return 0
   _spacue_stats_load || return 0
   emulate -L zsh
-  local -a sorts=() items=() match=() descs=()
+  local -a sorts=() scores=() items=() match=() descs=()
   local i sc l v k2 any=0
   for (( i = 1; i <= ${#_spacue_items_list}; i++ )); do
     v=${_spacue_items_list[i]}
@@ -156,11 +184,14 @@ _spacue_stats_rank() {  # bubble the candidates the user actually accepts upward
     fi
     (( sc > 99999 )) && sc=99999
     (( sc > 0 )) && any=1
-    # ascending on "score-complement:raw-index" => highest score first, ties keep order
-    printf -v l '%05d:%010d' "$(( 99999 - sc ))" "$i"
-    sorts+=( "$l" )
+    scores+=("$sc")
   done
   (( any )) || return 0
+  # Format sort keys only if a candidate actually has a score.
+  for (( i = 1; i <= ${#scores}; i++ )); do
+    printf -v l '%05d:%010d' "$(( 99999 - scores[i] ))" "$i"
+    sorts+=("$l")
+  done
   for l in "${(@o)sorts}"; do
     i=$(( 10#${l:6} ))
     items+=("${_spacue_items_list[i]}") match+=("${_spacue_match_list[i]}") descs+=("${_spacue_descs_list[i]}")
@@ -169,6 +200,7 @@ _spacue_stats_rank() {  # bubble the candidates the user actually accepts upward
 }
 
 _spacue_stats_note() {  # record at acceptance, before a command can change $PWD
+  [[ -z $_spacue_native_active ]] || return 0  # native groups retain their own order
   (( ${SPACUE_STATS:-1} )) || return 0
   [[ -n $_spacue_stats_cmd && -n $_spacue_pre && $BUFFER == "$_spacue_pre"* ]] || return 0
   local ins="${BUFFER#"$_spacue_pre"}"
@@ -183,24 +215,24 @@ _spacue_stats_note() {  # record at acceptance, before a command can change $PWD
   _spacue_stats_write "${keys[@]}"
 }
 
-_spacue_stats_write() {  # KEY... -- bump KEY's counts in $SPACUE_STATS_FILE
+_spacue_stats_write() {  # KEY... -- serialize read/modify/rename across terminals
   emulate -L zsh
   (( ${SPACUE_STATS:-1} )) || return 0
-  # TSV cannot represent these names; completing them still works normally.
   [[ $PWD != *[$'\t\n\r']* ]] || return 0
   local old_umask=$(umask)
   {
     umask 077
     local dir="${SPACUE_STATS_FILE:h}"
-    [[ -d $dir ]] || mkdir -p -- "$dir" 2>/dev/null || return 0
+    [[ -d $dir ]] || zf_mkdir -p -m 700 -- "$dir" 2>/dev/null || return 0
     local -A want=() eg=() ed=()
     local k l n d c ol
     for k do [[ -n $k && $k != *[$'\t\n\r']* ]] && want[$k]=1; done
     (( ${#want} )) || return 0
-    # Serialize read/modify/rename across terminals using zsh's native flock.
-    # Never write without the lock: an unavailable cache must not break editing.
-    local lockfd
-    : >> "$SPACUE_STATS_FILE.lock" 2>/dev/null || return 0
+    local lockfd tmpfd="" tmp="" attempt
+    # Native operations keep the lock short: no process startup while other
+    # terminals wait. The outer scope restores the user's umask on every exit.
+    sysopen -w -m 600 -o creat -u lockfd "$SPACUE_STATS_FILE.lock" 2>/dev/null || return 0
+    exec {lockfd}>&-
     zsystem flock -t 1 -i 0.01 -f lockfd "$SPACUE_STATS_FILE.lock" 2>/dev/null || return 0
     {
       local -a out=()
@@ -228,13 +260,20 @@ _spacue_stats_write() {  # KEY... -- bump KEY's counts in $SPACUE_STATS_FILE
         out+=("$k"$'\t'"$(( ${ed[$k]:-0} < 999999999 ? ${ed[$k]:-0} + 1 : 999999999 ))"$'\t'"$PWD")
       done
       (( ${#out} > 8000 )) && out=("${(@)out[-8000,-1]}")
-      local tmp
-      tmp=$(mktemp "$SPACUE_STATS_FILE.XXXXXX" 2>/dev/null) || return 0
-      { for ol in "${out[@]}"; do print -r -- "$ol"; done } >| "$tmp" 2>/dev/null || {
-        command rm -f -- "$tmp" 2>/dev/null; return 0; }
-      mv -f -- "$tmp" "$SPACUE_STATS_FILE" 2>/dev/null || {
-        command rm -f -- "$tmp" 2>/dev/null; return 0; }
+      for attempt in {1..5}; do
+        tmp="$SPACUE_STATS_FILE.$$.$RANDOM"
+        sysopen -w -m 600 -o creat,excl -u tmpfd "$tmp" 2>/dev/null && break
+        tmp=""
+      done
+      [[ -n $tmp ]] || return 0
+      { for ol in "${out[@]}"; do print -r -u $tmpfd -- "$ol" || return 0; done } 2>/dev/null
+      exec {tmpfd}>&-
+      tmpfd=""
+      zf_mv -f -- "$tmp" "$SPACUE_STATS_FILE" 2>/dev/null || return 0
+      _spacue_stats_signature=""
     } always {
+      if [[ -n $tmpfd ]]; then exec {tmpfd}>&-; fi
+      [[ -n $tmp ]] && zf_rm -f -- "$tmp" 2>/dev/null
       zsystem flock -u $lockfd 2>/dev/null
     }
   } always {
@@ -242,8 +281,18 @@ _spacue_stats_write() {  # KEY... -- bump KEY's counts in $SPACUE_STATS_FILE
   }
 }
 
-_spacue_apply_filter() {  # TOKEN
+_spacue_apply_filter() {  # TOKEN [plain-file-candidates]
+  emulate -L zsh
   local token=$1
+  if (( ${2:-0} )); then
+    # File providers use value == match and empty descriptions. Let zsh's
+    # native array filter do the scan instead of interpreting a loop per file.
+    local -a files=("${(@M)_spacue_items_list:#${token}*}")
+    [[ $token == -* ]] || files=("${(@)files:#-*}")
+    _spacue_items_list=("${files[@]}") _spacue_match_list=("${files[@]}")
+    _spacue_descs_list=("${(@)files/*/}")
+    return 0
+  fi
   local -a items=() match=() descs=()
   local i v m d lt=${(L)token}
   local flagmode=0
@@ -339,8 +388,9 @@ _spacue_prov_paths() {
   done
   ditems=( ${(oi)ditems} ) fitems=( ${(oi)fitems} )
   [[ $mode == dirs ]] && _spacue_add "${dirpfx}../" "" "${dirpfx}../"
-  for name in "${ditems[@]}"; do _spacue_add "${dirpfx}${name}" "" "${dirpfx}${name}"; done
-  for name in "${fitems[@]}"; do _spacue_add "${dirpfx}${name}" "" "${dirpfx}${name}"; done
+  local -a candidates=("${(@)ditems/#/$dirpfx}" "${(@)fitems/#/$dirpfx}")
+  _spacue_items_list+=("${candidates[@]}") _spacue_match_list+=("${candidates[@]}")
+  _spacue_descs_list+=("${(@)candidates/*/}")
 }
 
 # --- package.json helpers ---
@@ -355,11 +405,9 @@ _spacue_find_pkg() {  # walk up from $PWD; sets REPLY
 }
 
 _spacue_pkg_data() {  # PKGPATH FIELD -> "key<TAB>value" lines in REPLY
-  local pkgfile=$1 field=$2 mt key
-  _spacue_mtime "$pkgfile" || mt=0
-  mt=${REPLY:-0}
-  key="pkg:$pkgfile:$mt:$field"
-  if [[ -n ${_spacue_cache[$key]+x} ]]; then REPLY=${_spacue_cache[$key]}; return 0; fi
+  local pkgfile=$1 field=$2 key=""
+  _spacue_source_stamp "$pkgfile" && key="pkg:$pkgfile:$REPLY:$field"
+  if [[ -n $key && -n ${_spacue_cache[$key]+x} ]]; then REPLY=${_spacue_cache[$key]}; return 0; fi
   local out=""
   if _spacue_has node; then
     out=$(command node -e '
@@ -383,7 +431,7 @@ for k in sorted(d): print("%s\t%s" % (k, str(d[k]).replace("\n"," ")))' "$pkgfil
         if (ins && n > 0 && n == m) ins=0
       }' "$pkgfile" 2>/dev/null)
   fi
-  _spacue_cached_set "$key" "$out"
+  [[ -n $key ]] && _spacue_cached_set "$key" "$out"
   REPLY=$out
 }
 
@@ -540,11 +588,9 @@ _spacue_prov_make() {
     mf=""
   done
   [[ -n $mf ]] || return 0
-  local mt key out
-  _spacue_mtime "$mf" || mt=0
-  mt=${REPLY:-0}
-  key="make:$PWD:$mf:$mt"
-  if [[ -n ${_spacue_cache[$key]+x} ]]; then out=${_spacue_cache[$key]} else
+  local key="" out
+  _spacue_source_stamp "$mf" && key="make:$PWD:$mf:$REPLY"
+  if [[ -n $key && -n ${_spacue_cache[$key]+x} ]]; then out=${_spacue_cache[$key]} else
     out=$(awk '
       /^[a-zA-Z0-9][a-zA-Z0-9_.-]*[ \t]*:/ {
         line=$0; name=line; sub(/[ \t]*:.*/,"",name);
@@ -553,7 +599,7 @@ _spacue_prov_make() {
         gsub(/[ \t]+$/,"",desc);
         print name "\t" desc
       }' "$mf" 2>/dev/null)
-    _spacue_cached_set "$key" "$out"
+    [[ -n $key ]] && _spacue_cached_set "$key" "$out"
   fi
   local l n v
   for l in ${(f)out}; do
@@ -733,6 +779,48 @@ _spacue_collect_from_buffer() {
   return $rc
 }
 
+# One unfiltered snapshot per interaction. Custom providers remain dynamic.
+typeset -g _spacue_snapshot_key="" _spacue_snapshot_kind="" _spacue_snapshot_prefix=""
+typeset -gi _spacue_snapshot_time=0
+typeset -ga _spacue_snapshot_items _spacue_snapshot_match _spacue_snapshot_descs
+
+_spacue_source_context() {  # CMD FN TOKEN ARGS... -> reply=(key source-token ttl)
+  local cmd=$1 fn=$2 token=$3 source_token=$3 ttl=1 source="" file=""
+  shift 3
+  case $fn in
+    (__builtin__:_spacue_prov_pkgmgr)
+      if _spacue_find_pkg; then
+        file=$REPLY; _spacue_file_stamp "$file"
+        source="$file:$REPLY"
+      fi
+      ttl=30 ;;
+    (__builtin__:_spacue_prov_make)
+      for file in Makefile makefile GNUmakefile; do
+        [[ -f $file ]] && { _spacue_file_stamp "$file"; source="$file:$REPLY"; break; }
+      done
+      ttl=30 ;;
+    (__builtin__:_spacue_prov_git) ttl=3 ;;
+    (__builtin__:_spacue_prov_ssh) ttl=10 ;;
+    (__builtin__:_spacue_prov_kill) ttl=2 ;;
+    (__builtin__:_spacue_prov_cmds) ttl=30 ;;
+    ('')
+      [[ -n ${_spacue_pathcmds[$cmd]+x} ]] || (( SPACUE_GENERIC )) || return 1
+      # Generate all siblings once, not only the initially typed prefix.
+      local parent="" base=$token realdir
+      [[ $token == */* ]] && { parent=${token%/*}/; base=${token##*/}; }
+      source_token=$parent
+      [[ $base == .* ]] && source_token+=.
+      realdir=${parent/#\~/$HOME}
+      _spacue_file_stamp "${realdir:-.}"
+      source="$source_token:$REPLY" ;;
+    (*) return 1 ;;
+  esac
+  local flagmode=0
+  [[ $token == -* ]] && flagmode=1
+  local -a parts=("$PWD" "$cmd" "$fn" "$source" "$flagmode" "$SPACUE_GENERIC" "$@")
+  reply=("${(j: :)${(@qqq)parts}}" "$source_token" "$ttl")
+}
+
 _spacue_dispatch() {
   local cmd=$1 token=$2
   shift 2
@@ -740,6 +828,7 @@ _spacue_dispatch() {
   SPACUE_KIND=""
   _spacue_pkg_prefix=""
   _spacue_stats_cmd=$cmd
+  _spacue_native_active=""
   local fn=""
   local d
   for d in ${=_spacue_disabled_arr}; do
@@ -749,52 +838,101 @@ _spacue_dispatch() {
   elif [[ -n ${_spacue_providers[$cmd]+x} ]]; then fn=${_spacue_providers[$cmd]}
   elif [[ -n ${_spacue_builtin_providers[$cmd]+x} ]]; then fn="__builtin__:${_spacue_builtin_providers[$cmd]}"
   fi
-  case $fn in
-    (__disabled__)
-      if [[ -n ${_spacue_pathcmds[$cmd]+x} ]]; then _spacue_prov_paths all "$token"; fi
-      ;;
-    ('' )
-      if [[ -n ${_spacue_pathcmds[$cmd]+x} ]]; then
-        if [[ $cmd == (cd|pushd) ]]; then _spacue_prov_paths dirs "$token"
-        else _spacue_prov_paths all "$token"; fi
-      elif (( SPACUE_GENERIC )); then
-        _spacue_prov_paths all "$token"
-      fi
-      ;;
-    (__builtin__:* )
-      "${fn#__builtin__:}" "$cmd" "$token" "${sargs[@]}"
-      ;;
-    (*)
-      "$fn" "$cmd" "$token" "${sargs[@]}"
-      ;;
-  esac
-  # flag fallback: "-<...>" offers the flags table even for plain path commands
-  if [[ $token == -* && -n ${_spacue_flags[$cmd]+x} ]]; then
-    _spacue_add_flags "$cmd"
+  if (( SPACUE_NATIVE )) && [[ $fn == '' && -z ${_spacue_pathcmds[$cmd]+x} && -n ${_comps[$cmd]-} ]]; then
+    _spacue_native_active=1
   fi
-  _spacue_dedup_sort
-  # central filter
-  [[ -z $SPACUE_KIND ]] && SPACUE_KIND=words
-  if [[ $cmd == (cd|pushd) ]]; then SPACUE_KIND=paths; fi
-  if [[ -n ${_spacue_pathcmds[$cmd]+x} && -z ${_spacue_builtin_providers[$cmd]+x} ]]; then SPACUE_KIND=paths; fi
-  _spacue_apply_filter "$token"
+  local plain_files=0
+  if [[ $fn == '' && ( $token != -* || -z ${_spacue_flags[$cmd]+x} ) ]] &&
+      { [[ -n ${_spacue_pathcmds[$cmd]+x} ]] || (( SPACUE_GENERIC )); }; then
+    plain_files=1
+  fi
+  local -a reply
+  local key="" source_token=$token ttl=0
+  if _spacue_source_context "$cmd" "$fn" "$token" "${sargs[@]}"; then
+    key=$reply[1] source_token=$reply[2] ttl=$reply[3]
+  fi
+  if [[ $_spacue_state != idle && -n $key && $_spacue_snapshot_key == "$key" ]] &&
+      (( SECONDS - _spacue_snapshot_time < ttl )); then
+    _spacue_items_list=("${_spacue_snapshot_items[@]}")
+    if (( ! plain_files )); then
+      _spacue_match_list=("${_spacue_snapshot_match[@]}")
+      _spacue_descs_list=("${_spacue_snapshot_descs[@]}")
+    fi
+    SPACUE_KIND=$_spacue_snapshot_kind _spacue_pkg_prefix=$_spacue_snapshot_prefix
+  else
+    _spacue_items_list=() _spacue_match_list=() _spacue_descs_list=()
+    case $fn in
+      (__disabled__)
+        if [[ -n ${_spacue_pathcmds[$cmd]+x} ]]; then _spacue_prov_paths all "$token"; fi
+        ;;
+      ('' )
+        if [[ -n ${_spacue_pathcmds[$cmd]+x} ]]; then
+          if [[ $cmd == (cd|pushd) ]]; then _spacue_prov_paths dirs "$source_token"
+          else _spacue_prov_paths all "$source_token"; fi
+        elif (( SPACUE_GENERIC )); then
+          _spacue_prov_paths all "$source_token"
+        fi
+        ;;
+      (__builtin__:* )
+        "${fn#__builtin__:}" "$cmd" "$token" "${sargs[@]}"
+        ;;
+      (*)
+        "$fn" "$cmd" "$token" "${sargs[@]}"
+        ;;
+    esac
+    # flag fallback: "-<...>" offers the flags table even for plain path commands
+    if [[ $token == -* && -n ${_spacue_flags[$cmd]+x} ]]; then
+      _spacue_add_flags "$cmd"
+    fi
+    (( plain_files )) || _spacue_dedup_sort
+    # central filter
+    [[ -z $SPACUE_KIND ]] && SPACUE_KIND=words
+    if [[ $cmd == (cd|pushd) ]]; then SPACUE_KIND=paths; fi
+    if [[ -n ${_spacue_pathcmds[$cmd]+x} && -z ${_spacue_builtin_providers[$cmd]+x} ]]; then SPACUE_KIND=paths; fi
+    _spacue_snapshot_key=$key _spacue_snapshot_time=$SECONDS
+    if [[ -n $key ]]; then
+      _spacue_snapshot_items=("${_spacue_items_list[@]}")
+      if (( plain_files )); then
+        _spacue_snapshot_match=() _spacue_snapshot_descs=()
+      else
+        _spacue_snapshot_match=("${_spacue_match_list[@]}")
+        _spacue_snapshot_descs=("${_spacue_descs_list[@]}")
+      fi
+      _spacue_snapshot_kind=$SPACUE_KIND _spacue_snapshot_prefix=$_spacue_pkg_prefix
+    fi
+  fi
+  _spacue_apply_filter "$token" "$plain_files"
   _spacue_stats_rank
   (( ${#_spacue_items_list} > SPACUE_MAX )) && {
     _spacue_items_list=("${(@)_spacue_items_list[1,$SPACUE_MAX]}")
     _spacue_match_list=("${(@)_spacue_match_list[1,$SPACUE_MAX]}")
     _spacue_descs_list=("${(@)_spacue_descs_list[1,$SPACUE_MAX]}")
   }
-  (( ${#_spacue_items_list} ))
+  [[ -n $_spacue_native_active ]] || (( ${#_spacue_items_list} ))
 }
 
 typeset -ga _spacue_disabled_arr
 _spacue_disabled_arr=(${=SPACUE_DISABLED})
 
 # ------------------------------------------------- completion plumbing -----
-# Spacue feeds its candidates into the *standard* completion machinery via
-# the `completer` style instead of a custom zle -C widget.  That keeps
-# native menu selection, listing, colours and zstyle formatting intact.
+# A private completion context keeps user zstyles (including -e rules) intact.
+_spacue_complete() {
+  local curcontext=spacue:::
+  _main_complete _spacue_completer
+  local rc=$?
+  _spacue_completion_matches=${compstate[nmatches]:-0}
+  return $rc
+}
+
 _spacue_completer() {  # runs inside the completion system while pending
+  if [[ -n $_spacue_native_active ]]; then
+    local saved_prefix=$PREFIX saved_suffix=$SUFFIX saved_iprefix=$IPREFIX saved_isuffix=$ISUFFIX
+    _complete
+    (( compstate[nmatches] )) && return 0
+    # A missing/failed definition falls back to the ordinary file provider.
+    PREFIX=$saved_prefix SUFFIX=$saved_suffix IPREFIX=$saved_iprefix ISUFFIX=$saved_isuffix
+    _spacue_native_active=""
+  fi
   (( ${#_spacue_items_list} )) || return 1
   local -a items=("${_spacue_items_list[@]}") disp
   local i
@@ -828,20 +966,11 @@ _spacue_completer() {  # runs inside the completion system while pending
     (( ${#iitems} )) && compadd -U -V spacue -d iidisp -a iitems
   fi
 }
-_spacue_completer_style() {  # zstyle -e answer function
-  if [[ -n $_spacue_pending ]]; then
-    reply=(_spacue_completer)
-  elif [[ $_spacue_saved_completer == "__unset__" ]]; then
-    reply=(_complete)
-  else
-    reply=("${_spacue_saved_completer[@]}")
-  fi
-}
-
 # ---------------------------------------------------- menu open / state ---
-typeset -g _spacue_on _spacue_pre _spacue_typed _spacue_pending _spacue_fires _spacue_menufires
-typeset -g _spacue_saved_menu _spacue_saved_verbose _spacue_saved_completer
+typeset -g _spacue_state=idle _spacue_phase="" _spacue_pre="" _spacue_typed=""
 typeset -g _spacue_styles_saved
+typeset -gi _spacue_completion_matches=0
+typeset -g _spacue_native_active=""
 typeset -g _spacue_shields_up _spacue_esc_taken _spacue_beep_saved
 typeset -gA _spacue_prev_main_tab
 typeset -gA _spacue_prev_menu_keys
@@ -849,26 +978,14 @@ typeset -g _spacue_firekey=$'\e[991~'
 
 _spacue_style_on() {
   [[ -n $_spacue_styles_saved ]] && return 0
-  emulate -L zsh
-  local -a v
-  if zstyle -a ':completion:*' menu v; then _spacue_saved_menu=("${v[@]}"); else _spacue_saved_menu="__unset__"; fi
-  if zstyle -a ':completion:*' verbose v; then _spacue_saved_verbose=("${v[@]}"); else _spacue_saved_verbose="__unset__"; fi
-  if zstyle -a ':completion:*' completer v; then _spacue_saved_completer=("${v[@]}"); else _spacue_saved_completer="__unset__"; fi
-  zstyle ':completion:*' menu select
-  zstyle -e ':completion:*' completer _spacue_completer_style
-  (( SPACUE_HINTS )) && zstyle ':completion:*' verbose yes
+  zstyle ':completion:spacue:*' menu select
+  (( SPACUE_HINTS )) && zstyle ':completion:spacue:*' verbose yes
   _spacue_styles_saved=1
 }
 _spacue_style_off() {
   [[ -n $_spacue_styles_saved ]] || return 0
-  emulate -L zsh
-  if [[ $_spacue_saved_menu == "__unset__" ]]; then zstyle -d ':completion:*' menu
-  else zstyle ':completion:*' menu "${_spacue_saved_menu[@]}"; fi
-  if [[ $_spacue_saved_verbose == "__unset__" ]]; then zstyle -d ':completion:*' verbose
-  else zstyle ':completion:*' verbose "${_spacue_saved_verbose[@]}"; fi
-  if [[ $_spacue_saved_completer == "__unset__" ]]; then zstyle -d ':completion:*' completer
-  else zstyle ':completion:*' completer "${_spacue_saved_completer[@]}"; fi
-  _spacue_saved_menu="" _spacue_saved_verbose="" _spacue_saved_completer=""
+  zstyle -d ':completion:spacue:*' menu
+  zstyle -d ':completion:spacue:*' verbose
   _spacue_styles_saved=""
 }
 
@@ -956,14 +1073,14 @@ _spacue_shields_off() {
 # the visible line (a typing-trigger prefix insert, a progressive
 # single-match insert, the typed text itself) is kept as-is.
 _spacue_fix_dismissed_line() {
-  [[ -n $_spacue_on ]] || return 0
+  [[ $_spacue_state != idle ]] || return 0
   [[ $BUFFER == "$_spacue_pre" ]] || return 0
   BUFFER="${_spacue_pre}${_spacue_typed}"
   CURSOR=${#BUFFER}
 }
 
 _spacue_esc() {  # re-dispatched Esc from a dismissed menu
-  if [[ -n $_spacue_on ]]; then
+  if [[ $_spacue_state != idle ]]; then
     _spacue_fix_dismissed_line
     _spacue_cleanup_state
   fi
@@ -987,7 +1104,10 @@ _spacue_cleanup_state() {
       fi
     done
   fi
-  _spacue_on="" _spacue_pre="" _spacue_typed="" _spacue_pending="" _spacue_fires="" _spacue_menufires=""
+  _spacue_state=idle _spacue_phase="" _spacue_pre="" _spacue_typed=""
+  _spacue_native_active=""
+  _spacue_snapshot_key=""
+  _spacue_snapshot_items=() _spacue_snapshot_match=() _spacue_snapshot_descs=()
   _spacue_beep_restore
   _spacue_shields_off
   _spacue_style_off
@@ -1011,88 +1131,68 @@ _spacue_replace_token() {  # ITEM -- replace current token with ITEM
   CURSOR=${#BUFFER}
 }
 
-_spacue_fire() {  # one completion attempt per invocation
-  local before=$BUFFER
-  zle complete-word
-  (( _spacue_fires = ${_spacue_fires:-0} + 1 ))
-  if (( _spacue_fires == 1 )); then
-    # The first attempt is zsh's "insert common prefix" phase.  When it
-    # changed the line it did not list anything, so two more attempts are
-    # needed -- list, then menu -- and the menu sits two fires from here.
-    # (A no-change first attempt already lists; the menu comes next.)
-    if [[ $BUFFER != $before ]]; then
-      _spacue_menufires=3
-      # Fuzzy lists (-U) have no common prefix with the token, so this
-      # insert phase rewrites or wipes it (`npm run i` -> `npm run `).
-      # The typed filter text is kept in _spacue_pre/_spacue_typed; typing
-      # rebuilds the line from it, and the dismiss wrappers restore it.
-      zle -U "$_spacue_firekey"
-      return 0
-    fi
-    _spacue_menufires=2
-    return 0
-  fi
-  if (( _spacue_fires >= _spacue_menufires )); then
-    # The menu attempt has just finished (any earlier fires were prefix
-    # insert / listing).  The completion system acts on its own again, so
-    # our candidates are dropped before the next Tab press.  When the menu
-    # was accepted with Enter the line changed and nothing is queued
-    # behind the completion; that is the end of the Spacue state.  (Typing
-    # mid-menu ungets the typed key and Esc/C-g unget the dismiss key, so
-    # KEYS_QUEUED_COUNT > 0 there -- those paths keep the state for their
-    # re-dispatched keys to clean up.)
-    _spacue_pending=""
-    if [[ $BUFFER != $before ]]; then
-      # A Tab-accept leaves exactly one byte in the input queue: the original
-      # Tab re-dispatched by the menu machinery (Enter and menu-open leave
-      # none).  Pop that one byte: a Tab means the completion was accepted,
-      # so the Spacue state can end cleanly right here -- the swallowed Tab
-      # never reaches the stock widget again, which is what used to let the
-      # stock completion (git pathspecs, npm scripts, ...) append its own
-      # candidate after the accepted one.  Any non-Tab queued byte is
-      # type-ahead or a dismissal key arriving mid-menu; those own their
-      # handling later, so push the byte back unchanged.
-      if (( ${KEYS_QUEUED_COUNT:-0} == 1 )); then
-        local _spacue_qk=""
-        if read -t 0 -k _spacue_qk 2>/dev/null; then
-          if [[ $_spacue_qk == $'\t' ]]; then
-            _spacue_stats_note
-            _spacue_cleanup_state
-          else
-            zle -U "$_spacue_qk"
-          fi
-        fi
-      fi
-      if [[ -n $_spacue_on && ${KEYS_QUEUED_COUNT:-0} -eq 0 ]]; then
-        _spacue_stats_note
+_spacue_accept_selection() {
+  [[ $_spacue_state != idle ]] || return 0
+  _spacue_stats_note
+  _spacue_cleanup_state
+}
+
+_spacue_fire() {
+  [[ $_spacue_state == menu ]] || return 0
+  local phase=$_spacue_phase before=$BUFFER
+  zle spacue-complete
+  case $phase in
+    (prefix)
+      if (( _spacue_completion_matches == 0 )); then
+        BUFFER="$_spacue_pre$_spacue_typed" CURSOR=${#BUFFER}
         _spacue_cleanup_state
+        zle -Rc
+        return 0
+      elif (( _spacue_completion_matches == 1 )); then
+        _spacue_state=preview
+        return 0
       fi
+      if [[ $BUFFER != $before ]]; then _spacue_phase=list
+      else _spacue_phase=select; fi
+      zle -U "$_spacue_firekey"
+      return 0 ;;
+    (list)
+      _spacue_phase=select
+      zle -U "$_spacue_firekey"
+      return 0 ;;
+  esac
+  # The native menu returned. Queued typing/dismissal belongs to its widget;
+  # no queued key means acceptance. Tab may be redispatched by complist.
+  _spacue_state=preview
+  if (( ${KEYS_QUEUED_COUNT:-0} == 1 )); then
+    local queued=""
+    if read -t 0 -k queued 2>/dev/null; then
+      if [[ $queued == $'\t' ]]; then
+        _spacue_accept_selection
+        return 0
+      fi
+      zle -U -- "$queued"
     fi
   fi
-  # a non-zero rc here makes zle beep after the menu closes; the menu
-  # itself already provides all the feedback we need
+  (( ${KEYS_QUEUED_COUNT:-0} == 0 )) && _spacue_accept_selection
   return 0
 }
 
-# Open the menu: queue two completion fires.  The first lists the matches,
-# the second starts native menu selection (same as pressing Tab twice).
 _spacue_show_menu() {
-  _spacue_on=1
+  _spacue_state=menu _spacue_phase=prefix
   _spacue_style_on
   _spacue_beep_off
   _spacue_shields_on
-  _spacue_pending=1
-  _spacue_fires=0
-  _spacue_menufires=0
-  zle -U "$_spacue_firekey$_spacue_firekey"
+  zle -U "$_spacue_firekey"
 }
 
 # open / reopen from current buffer state (assumes collect already ran)
 _spacue_open_here() {
-  (( ${#_spacue_items_list} )) || return 1
+  [[ -n $_spacue_native_active ]] || (( ${#_spacue_items_list} )) || return 1
   local toklen=${#_spacue_token}
   if (( toklen )); then _spacue_pre="${BUFFER[1,$(( ${#BUFFER} - toklen ))]}" else _spacue_pre="$BUFFER"; fi
   _spacue_typed=$_spacue_token
+  if [[ -n $_spacue_native_active ]]; then _spacue_show_menu; return 0; fi
   if (( ${#_spacue_items_list} == 1 )); then
     if [[ ${_spacue_items_list[1]} == ${(Q)_spacue_token}../ ]]; then
       # The only candidate is the parent link of an empty directory: the
@@ -1102,7 +1202,7 @@ _spacue_open_here() {
       return 0
     fi
     _spacue_replace_token "${_spacue_items_list[1]}"
-    _spacue_on=1
+    _spacue_state=preview
     _spacue_shields_on
     return 0
   fi
@@ -1114,10 +1214,11 @@ _spacue_reopen() {  # BASE
   local base=$1
   BUFFER="$base" CURSOR=${#BUFFER}
   if ! _spacue_collect_from_buffer; then _spacue_cleanup_state; return 0; fi
-  if (( ! ${#_spacue_items_list} )); then _spacue_cleanup_state; return 0; fi
+  if [[ -z $_spacue_native_active ]] && (( ! ${#_spacue_items_list} )); then _spacue_cleanup_state; return 0; fi
   local toklen=${#_spacue_token}
   if (( toklen )); then _spacue_pre="${BUFFER[1,$(( ${#BUFFER} - toklen ))]}" else _spacue_pre="$BUFFER"; fi
   _spacue_typed=$_spacue_token
+  if [[ -n $_spacue_native_active ]]; then _spacue_show_menu; return 0; fi
   if (( ${#_spacue_items_list} == 1 )); then
     # Progressive typing: show the single candidate live but keep the state
     # so the next keystroke re-filters from what was typed (otherwise the
@@ -1139,7 +1240,6 @@ _spacue_try_trigger() {  # MODE
   case $mode in
     (space)
       _spacue_collect_from_buffer || return 0
-      (( ${#_spacue_items_list} )) || return 0
       _spacue_open_here
       ;;
     (slash)
@@ -1164,7 +1264,7 @@ _spacue_try_trigger() {  # MODE
 
 # ------------------------------------------------------- widget wrappers ---
 _spacue_self_insert() {
-  if [[ -n $_spacue_on ]]; then
+  if [[ $_spacue_state != idle ]]; then
     # Typing while a menu is live (the key that ends menu-select, plus any
     # key typed ahead of it).  The line may still show completion preview
     # text or a half-restored buffer, so rebuild it from the canonical
@@ -1189,7 +1289,7 @@ _spacue_self_insert() {
 }
 
 _spacue_backward_delete_char() {
-  if [[ -n $_spacue_on ]]; then
+  if [[ $_spacue_state != idle ]]; then
     local typed=$_spacue_typed base
     if [[ -n $typed ]]; then
       typed="${typed[1,$(( ${#typed} - 1 ))]}"
@@ -1205,16 +1305,15 @@ _spacue_backward_delete_char() {
 }
 
 _spacue_accept_line() {
-  if [[ -n $_spacue_on ]]; then
-    _spacue_stats_note
-    _spacue_cleanup_state
+  if [[ $_spacue_state != idle ]]; then
+    _spacue_accept_selection
     return 0
   fi
   zle _spacue_accept
 }
 
 _spacue_send_break() {
-  if [[ -n $_spacue_on ]]; then
+  if [[ $_spacue_state != idle ]]; then
     # Cancel the pending Spacue state (menu already dismissed) without
     # aborting the line: the typed text stays put and the next key works.
     _spacue_fix_dismissed_line
@@ -1226,7 +1325,7 @@ _spacue_send_break() {
 }
 
 _spacue_list_expand() {
-  if [[ -n $_spacue_on ]]; then
+  if [[ $_spacue_state != idle ]]; then
     _spacue_fix_dismissed_line
     _spacue_cleanup_state
     zle -Rc 2>/dev/null
@@ -1236,7 +1335,7 @@ _spacue_list_expand() {
 }
 
 _spacue_vi_cmd_mode() {
-  if [[ -n $_spacue_on ]]; then
+  if [[ $_spacue_state != idle ]]; then
     _spacue_fix_dismissed_line
     _spacue_cleanup_state
     zle -Rc 2>/dev/null
@@ -1260,6 +1359,8 @@ _spacue_vi_cmd_mode() {
 
 # ------------------------------------------------------------- bootstrap ---
 _spacue_precmd() {
+  # Refresh hand-edited/in-place files even on filesystems with coarse mtimes.
+  _spacue_stats_signature=""
   _spacue_cleanup_state
 }
 
@@ -1283,6 +1384,7 @@ _spacue_install() {
   zle -A vi-cmd-mode _spacue_vicmd 2>/dev/null
   zle -N vi-cmd-mode _spacue_vi_cmd_mode
   zle -C spacue-dismiss list-choices _spacue_dismiss_rc 2>/dev/null
+  zle -C spacue-complete complete-word _spacue_complete
   zle -N spacue-esc _spacue_esc
   zle -N spacue-accept _spacue_accept_line
   zle -N spacue-fire _spacue_fire
@@ -1303,6 +1405,7 @@ _spacue_uninstall() {
   _spacue_shields_off
   _spacue_beep_restore
   zle -D spacue-dismiss 2>/dev/null
+  zle -D spacue-complete 2>/dev/null
   zle -D spacue-esc 2>/dev/null
   zle -D spacue-accept 2>/dev/null
   bindkey -M emacs -r "$_spacue_firekey" 2>/dev/null

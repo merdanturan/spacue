@@ -24,7 +24,7 @@ you:  npm ␣
 ## Why
 
 Most completion tooling is either heavyweight — daemons, background services,
-model hooks — or locked to a single editor. spacue is **a single ~48 KB zsh
+model hooks — or locked to a single editor. spacue is **a single ~51 KB zsh
 file**: no daemon, no background process, no extra runtime to install.
 It sits in your shell and makes the prompt you already use smarter.
 The optional demo media in this
@@ -118,13 +118,38 @@ Set these before spacue loads (or export them in `~/.zshrc`):
 | `SPACUE_ENABLED`         | `1`     | master kill switch                                 |
 | `SPACUE_HINTS`           | `1`     | show descriptions next to items                    |
 | `SPACUE_GENERIC`         | `1`     | file candidates for unknown commands               |
+| `SPACUE_NATIVE`          | `0`     | opt in to installed zsh completions for other commands |
 | `SPACUE_FUZZY`           | `1`     | substring fallback when prefix matching is empty   |
 | `SPACUE_TYPING_TRIGGER`  | `1`     | reopen the menu while typing after `dir/`          |
 | `SPACUE_COMPINIT`        | `1`     | auto-load compinit when your setup lacks it        |
 | `SPACUE_DISABLED`        | `()`    | providers to turn off, e.g. `SPACUE_DISABLED="ssh kill"` |
-| `SPACUE_MAX`             | `200`   | max candidates per menu                            |
+| `SPACUE_MAX`             | `200`   | max candidates in spacue's own provider menus       |
 | `SPACUE_STATS`           | `1`     | rank by accepted suggestions; `0` disables reads and writes |
 | `SPACUE_STATS_FILE`      | `${XDG_CACHE_HOME:-$HOME/.cache}/spacue/stats.tsv` | local usage file |
+
+## Native completions (opt-in)
+
+To use installed zsh completion definitions for commands without a spacue
+provider, set this before loading spacue:
+
+```zsh
+SPACUE_NATIVE=1
+```
+
+For example, `docker ␣` can use an already installed `_docker` definition.
+Spacue does not install completion definitions or the commands themselves.
+Built-in providers, registered custom providers and the existing path-command
+behavior retain precedence. If a native definition produces no matches, the
+ordinary file fallback is used when `SPACUE_GENERIC=1`.
+
+Native groups retain zsh's filtering, ordering, descriptions, quoting and suffix
+rules. They are not usage-ranked or subject to spacue's candidate cap; those
+features continue to apply to spacue's own candidates. Enter/Tab acceptance and
+Esc/Ctrl-G dismissal work the same way. Plain Tab remains unchanged.
+
+This is disabled by default for compatibility. Like pressing stock Tab, calling
+an installed completion function can execute programs and its latency depends
+on that function. Set `SPACUE_NATIVE=0` to return to file-only fallback.
 
 ## Local ranking
 
@@ -145,6 +170,12 @@ newlines are not recorded.
 Set `SPACUE_STATS=0` to opt out. Remove the stats file to reset ranking, or set
 `SPACUE_STATS_FILE` to a different path. Uninstalling the plugin preserves this
 usage file; remove it separately to delete your learned rankings.
+
+Parsed counts are cached in memory. Atomic updates from other terminals,
+directory/file changes and the next prompt invalidate that cache. Within an
+active menu, built-in provider candidates are reused before filtering and
+before the display limit; new interactions refresh them. Custom providers
+continue to run for every filter update.
 
 ## Custom providers
 
@@ -190,7 +221,7 @@ both.
 
 ## Compatibility
 
-Requires zsh with its standard `complist`, `stat`, and `system` modules
+Requires zsh with its standard `complist`, `stat`, `system`, and `files` modules
 (included with macOS and typical Linux/WSL zsh packages). Tested locally on
 zsh 5.9. The JSON reader
 for `package.json` prefers `node`, then `jq`, then `python3`, and finally falls
@@ -206,7 +237,16 @@ No Python packages are needed:
 python3 tests/run.py        # run the maintained suites sequentially
 python3 tests/regression.py # fast non-PTY regressions
 python3 tests/test_ui.py    # acceptance and quoting regressions
+python3 tests/test_native.py # installed completion integration
+python3 tests/benchmark.py   # warm filtering, synthetic large-directory workload
 ```
+
+The benchmark uses 200 package scripts, 5,000 directories and 8,000 ranking
+records. `--plugin /path/to/spacue.zsh` runs the same workload against another
+version. Timings are measurements, not test thresholds; run benchmarks separately
+from the test suites for a useful comparison.
+
+[Recorded comparison and methodology](docs/performance.md).
 
 The older `diag*.py` files outside the runner are exploratory diagnostics,
 not additional release checks. The maintained PTY suites share fixtures and
